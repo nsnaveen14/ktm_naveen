@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd //c \"taskkill /PID 15336 /F /T\")",
+      "Bash(echo \"exit: $?\")",
+      "Bash(cmd //c \"wmic process where ProcessId=15336 get Name,ProcessId,CommandLine 2>&1\")",
+      "Bash(npx ng:*)",
+      "Bash(xargs grep:*)",
+      "Bash(./gradlew ktm-ui:jar)",
+      "Bash(grep -n \"getAllIndicesIOBData\\\\|scanAllIndicesForIOBs\\\\|markIOBsAsCompleted\\\\|markIOBAsMitigated\\\\|executeIOBTrade\\\\|getIOBTradeSetup\" /d/trading/09-02-2026/KTManager/KTManager/src/main/java/com/trading/kalyani/KTManager/controller/*.java)",
+      "Bash(grep -n \"TradingProperties\\\\|class TradingProperties\" /d/trading/09-02-2026/KTManager/KTManager/src/main/java/com/trading/kalyani/KTManager/config/*.java)",
+      "Bash(grep -n \"interface BrahmastraService\\\\|class BrahmastraService\" /d/trading/09-02-2026/KTManager/KTManager/src/main/java/com/trading/kalyani/KTManager/service/*.java)",
+      "Bash(node_modules/.bin/ng build:*)",
+      "Bash(node -e \"const pkg = require\\(''./node_modules/lightweight-charts/package.json''\\); console.log\\(pkg.version\\);\")",
+      "Bash(node -e \"const lc = require\\(''./node_modules/lightweight-charts''\\); console.log\\(Object.keys\\(lc\\).filter\\(k => k.toLowerCase\\(\\).includes\\(''marker''\\) || k.toLowerCase\\(\\).includes\\(''series''\\)\\).join\\(''\\\\n''\\)\\);\")",
+      "Bash(find d:trading09-02-2026KTManagerKTManager -path */zerodhatech/ticker/OnError* -o -path */kiteconnect*OnError*)",
+      "Bash(find C:/Users/nsnav/.gradle -name kiteconnect*.jar)",
+      "Bash(unzip -p \"C:/Users/nsnav/.gradle/caches/modules-2/files-2.1/com.zerodhatech.kiteconnect/kiteconnect/3.5.1/65eeab050aec13d6124bc6c138c0a4e4f9f93bb9/kiteconnect-3.5.1-sources.jar\" \"com/zerodhatech/ticker/OnError.java\")"
+    ]
+  }
+}

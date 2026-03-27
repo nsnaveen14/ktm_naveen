@@ -1,0 +1,323 @@
+/* ── Container ─────────────────────────────────────────────────────────── */
+.ob-container {
+  background: #121212;
+  color: #e0e0e0;
+  padding: 16px;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────── */
+.ob-header {
+  padding: 12px 0 8px 0;
+}
+
+.ob-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.ob-title {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.ob-status-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ── Status chips ──────────────────────────────────────────────────────── */
+.chip-active {
+  background: #2e7d32 !important;
+  color: #ffffff !important;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.chip-inactive {
+  background: #424242 !important;
+  color: #bdbdbd !important;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.stat-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85rem;
+  background: #1e1e1e;
+  border-radius: 16px;
+  padding: 4px 10px;
+  color: #bdbdbd;
+}
+
+.stat-pill mat-icon {
+  font-size: 16px;
+  height: 16px;
+  width: 16px;
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────────── */
+.ob-card {
+  background: #1e1e1e !important;
+  border-radius: 8px !important;
+  border: 1px solid #333;
+}
+
+.ob-panel {
+  background: #1e1e1e !important;
+  color: #e0e0e0 !important;
+  border: 1px solid #333;
+  border-radius: 8px !important;
+}
+
+.section-title {
+  font-size: 0.95rem !important;
+  font-weight: 600 !important;
+  color: #90caf9 !important;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 12px;
+}
+
+/* ── Source toggles ─────────────────────────────────────────────────────── */
+.source-toggles {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+}
+
+.source-toggle-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.source-desc {
+  font-size: 0.72rem;
+  color: #757575;
+  margin-left: 4px;
+}
+
+/* ── Config grid ────────────────────────────────────────────────────────── */
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.toggle-field {
+  display: flex;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.config-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+/* ── Tables ────────────────────────────────────────────────────────────── */
+.ob-table {
+  width: 100%;
+  background: transparent;
+  color: #e0e0e0;
+}
+
+.ob-table th {
+  color: #90caf9 !important;
+  font-size: 0.78rem;
+  background: transparent !important;
+  border-bottom: 1px solid #333 !important;
+}
+
+.ob-table td {
+  color: #e0e0e0;
+  font-size: 0.82rem;
+  border-bottom: 1px solid #2a2a2a !important;
+}
+
+.ob-table tr:hover td {
+  background: #252525;
+}
+
+/* ── Symbol cell ─────────────────────────────────────────────────────────── */
+.symbol-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.option-sym {
+  font-family: monospace;
+  font-size: 0.82rem;
+}
+
+.source-tag {
+  font-size: 0.68rem;
+  color: #757575;
+  text-transform: uppercase;
+}
+
+/* ── Option type chips ───────────────────────────────────────────────────── */
+.chip-ce {
+  background: #1b5e20 !important;
+  color: #a5d6a7 !important;
+  font-size: 0.72rem !important;
+}
+
+.chip-pe {
+  background: #b71c1c !important;
+  color: #ef9a9a !important;
+  font-size: 0.72rem !important;
+}
+
+/* ── P&L colours ─────────────────────────────────────────────────────────── */
+.pnl-positive {
+  color: #4caf50 !important;
+  font-weight: 600;
+}
+
+.pnl-negative {
+  color: #ef5350 !important;
+  font-weight: 600;
+}
+
+/* ── Status / exit tags ────────────────────────────────────────────────── */
+.status-chip {
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+.status-chip.open {
+  background: #0d47a1;
+  color: #90caf9;
+}
+
+.exit-reason {
+  font-size: 0.75rem;
+  color: #bdbdbd;
+  text-transform: uppercase;
+}
+
+/* ── Count badges ────────────────────────────────────────────────────────── */
+.count-chip {
+  background: #1565c0 !important;
+  color: #fff !important;
+  font-size: 0.7rem !important;
+  margin-left: 8px;
+}
+
+.count-chip-sm {
+  background: #1565c0 !important;
+  color: #fff !important;
+  font-size: 0.65rem !important;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+/* ── Empty state ─────────────────────────────────────────────────────────── */
+.empty-state {
+  text-align: center;
+  color: #616161;
+  padding: 24px;
+  font-size: 0.88rem;
+}
+
+/* ── Optimization panels ─────────────────────────────────────────────────── */
+.opt-panel {
+  border-left: 3px solid #1565c0 !important;
+}
+
+.opt-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  margin-right: 8px;
+  color: #90caf9;
+  vertical-align: middle;
+}
+
+.opt-active {
+  color: #4caf50;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.opt-inactive {
+  color: #616161;
+  font-size: 0.78rem;
+}
+
+.opt-body {
+  padding: 4px 0 8px 0;
+}
+
+.opt-desc {
+  font-size: 0.82rem;
+  color: #9e9e9e;
+  margin: 0 0 12px 0;
+  line-height: 1.5;
+}
+
+.opt-desc strong {
+  color: #e0e0e0;
+}
+
+.opt-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.opt-controls.three-col {
+  gap: 12px;
+}
+
+.opt-field {
+  width: 180px;
+}
+
+.save-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 0 8px 0;
+}
+
+/* ── Material overrides ──────────────────────────────────────────────────── */
+::ng-deep .ob-panel .mat-expansion-panel-header {
+  background: #1e1e1e !important;
+  color: #e0e0e0 !important;
+}
+
+::ng-deep .ob-panel .mat-expansion-panel-body {
+  background: #1e1e1e !important;
+}
+
+::ng-deep .ob-container .mat-form-field-outline {
+  color: #555 !important;
+}
+
+::ng-deep .ob-container .mat-form-field-label {
+  color: #9e9e9e !important;
+}
+
+::ng-deep .ob-container .mat-input-element {
+  color: #e0e0e0 !important;
+}

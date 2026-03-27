@@ -1,0 +1,376 @@
+<div class="ob-container">
+
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
+  <div class="ob-header">
+    <div class="ob-title-row">
+      <h2 class="ob-title">Option Buying Strategy</h2>
+      <mat-slide-toggle
+        [checked]="config.enabled"
+        (change)="onMasterToggle($event.checked)"
+        [disabled]="loading"
+        color="primary">
+      </mat-slide-toggle>
+    </div>
+
+    <div class="ob-status-row">
+      <mat-chip [class]="config.enabled ? 'chip-active' : 'chip-inactive'">
+        {{ config.enabled ? 'ACTIVE' : 'INACTIVE' }}
+      </mat-chip>
+      <span class="stat-pill">
+        <mat-icon>trending_up</mat-icon>
+        Open: {{ status.openTradesCount }}
+      </span>
+      <span class="stat-pill">
+        <mat-icon>receipt</mat-icon>
+        Today: {{ status.todayTrades }}
+      </span>
+      <span class="stat-pill" [class]="getPnlClass(status.todayPnl)">
+        <mat-icon>account_balance_wallet</mat-icon>
+        {{ formatPnl(status.todayPnl) }}
+      </span>
+      <button mat-icon-button (click)="loadAll()" matTooltip="Refresh">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <mat-divider></mat-divider>
+
+  <!-- ── Signal Sources ─────────────────────────────────────────────────── -->
+  <mat-card class="ob-card">
+    <mat-card-title class="section-title">Signal Sources</mat-card-title>
+    <div class="source-toggles">
+      <div class="source-toggle-item">
+        <mat-slide-toggle [(ngModel)]="config.enableIob" color="accent">IOB</mat-slide-toggle>
+        <span class="source-desc">Internal Order Blocks</span>
+      </div>
+      <div class="source-toggle-item">
+        <mat-slide-toggle [(ngModel)]="config.enableBrahmastra" color="accent">Brahmastra</mat-slide-toggle>
+        <span class="source-desc">Triple Confirmation</span>
+      </div>
+      <div class="source-toggle-item">
+        <mat-slide-toggle [(ngModel)]="config.enableGainzAlgo" color="accent">GainzAlgo</mat-slide-toggle>
+        <span class="source-desc">EMA + RSI Pullback</span>
+      </div>
+      <div class="source-toggle-item">
+        <mat-slide-toggle [(ngModel)]="config.enableZeroHero" color="accent">ZeroHero</mat-slide-toggle>
+        <span class="source-desc">Expiry Day Cheap OTM</span>
+      </div>
+    </div>
+  </mat-card>
+
+  <!-- ── Configuration ──────────────────────────────────────────────────── -->
+  <mat-expansion-panel class="ob-panel">
+    <mat-expansion-panel-header>
+      <mat-panel-title>Configuration</mat-panel-title>
+    </mat-expansion-panel-header>
+
+    <div class="config-grid">
+      <mat-form-field appearance="outline">
+        <mat-label>Lots</mat-label>
+        <input matInput type="number" [(ngModel)]="config.numLots" min="1" max="20">
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Target %</mat-label>
+        <input matInput type="number" [(ngModel)]="config.targetPercent" min="5" max="200">
+        <span matSuffix>%</span>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Stop Loss %</mat-label>
+        <input matInput type="number" [(ngModel)]="config.stoplossPercent" min="5" max="100">
+        <span matSuffix>%</span>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Max Open Trades</mat-label>
+        <input matInput type="number" [(ngModel)]="config.maxOpenTrades" min="1" max="10">
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Max Daily Loss (₹)</mat-label>
+        <input matInput type="number" [(ngModel)]="config.maxDailyLoss">
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Max Daily Trades</mat-label>
+        <input matInput type="number" [(ngModel)]="config.maxDailyTrades" min="1" max="50">
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Start Time</mat-label>
+        <input matInput type="time" [(ngModel)]="config.tradeStartTime">
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>End Time</mat-label>
+        <input matInput type="time" [(ngModel)]="config.tradeEndTime">
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Min Signal Strength</mat-label>
+        <mat-select [(ngModel)]="config.minSignalStrength">
+          <mat-option *ngFor="let s of strengthOptions" [value]="s">{{ s }}</mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <div class="toggle-field">
+        <mat-slide-toggle [(ngModel)]="config.exitOnReverseSignal" color="warn">
+          Exit on Reverse Signal
+        </mat-slide-toggle>
+      </div>
+    </div>
+
+    <div class="config-actions">
+      <button mat-raised-button color="primary" (click)="saveConfig()" [disabled]="loading">
+        <mat-icon>save</mat-icon> Save Config
+      </button>
+    </div>
+  </mat-expansion-panel>
+
+  <!-- ── Optimization 1: Signal Confluence ─────────────────────────────── -->
+  <mat-expansion-panel class="ob-panel opt-panel">
+    <mat-expansion-panel-header>
+      <mat-panel-title>
+        <mat-icon class="opt-icon">hub</mat-icon>
+        Signal Confluence Filter
+      </mat-panel-title>
+      <mat-panel-description>
+        <span [class]="config.requireConfluence ? 'opt-active' : 'opt-inactive'">
+          {{ config.requireConfluence ? 'ENABLED — ' + config.minConfluenceCount + '+ sources required' : 'DISABLED' }}
+        </span>
+      </mat-panel-description>
+    </mat-expansion-panel-header>
+
+    <div class="opt-body">
+      <p class="opt-desc">
+        Only enter a trade when <strong>N or more signal sources agree</strong> on the same direction.
+        Applies to IOB, Brahmastra and GainzAlgo. ZeroHero always fires independently.
+      </p>
+      <div class="opt-controls">
+        <mat-slide-toggle [(ngModel)]="config.requireConfluence" color="accent">
+          Require Confluence
+        </mat-slide-toggle>
+        <mat-form-field appearance="outline" class="opt-field">
+          <mat-label>Min Sources to Agree</mat-label>
+          <mat-select [(ngModel)]="config.minConfluenceCount" [disabled]="!config.requireConfluence">
+            <mat-option [value]="2">2 sources</mat-option>
+            <mat-option [value]="3">3 sources</mat-option>
+          </mat-select>
+        </mat-form-field>
+      </div>
+    </div>
+  </mat-expansion-panel>
+
+  <!-- ── Optimization 2: VIX / Premium Filter ──────────────────────────── -->
+  <mat-expansion-panel class="ob-panel opt-panel">
+    <mat-expansion-panel-header>
+      <mat-panel-title>
+        <mat-icon class="opt-icon">filter_alt</mat-icon>
+        VIX / Premium Filter
+      </mat-panel-title>
+      <mat-panel-description>
+        <span class="opt-active">VIX ≤ {{ config.maxVix }} &nbsp;|&nbsp; Premium ₹{{ config.minPremium }}–₹{{ config.maxPremium }}</span>
+      </mat-panel-description>
+    </mat-expansion-panel-header>
+
+    <div class="opt-body">
+      <p class="opt-desc">
+        Skip entry when VIX is elevated (expensive premiums) or when the option premium is outside
+        a sensible range (too cheap = illiquid, too expensive = poor risk:reward).
+      </p>
+      <div class="opt-controls three-col">
+        <mat-form-field appearance="outline" class="opt-field">
+          <mat-label>Max VIX</mat-label>
+          <input matInput type="number" [(ngModel)]="config.maxVix" min="0" max="50" step="0.5">
+          <mat-hint>0 = disabled</mat-hint>
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="opt-field">
+          <mat-label>Min Premium (₹)</mat-label>
+          <input matInput type="number" [(ngModel)]="config.minPremium" min="0">
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="opt-field">
+          <mat-label>Max Premium (₹)</mat-label>
+          <input matInput type="number" [(ngModel)]="config.maxPremium" min="0">
+        </mat-form-field>
+      </div>
+    </div>
+  </mat-expansion-panel>
+
+  <!-- ── Optimization 3: Trailing Stop Loss ────────────────────────────── -->
+  <mat-expansion-panel class="ob-panel opt-panel">
+    <mat-expansion-panel-header>
+      <mat-panel-title>
+        <mat-icon class="opt-icon">trending_up</mat-icon>
+        Trailing Stop Loss
+      </mat-panel-title>
+      <mat-panel-description>
+        <span [class]="config.trailingSlEnabled ? 'opt-active' : 'opt-inactive'">
+          {{ config.trailingSlEnabled
+            ? 'ENABLED — activates at ' + config.trailingActivationPct + '% of target, trails ' + config.trailingTrailPct + '% of profit'
+            : 'DISABLED' }}
+        </span>
+      </mat-panel-description>
+    </mat-expansion-panel-header>
+
+    <div class="opt-body">
+      <p class="opt-desc">
+        Once profit reaches the <strong>Activation %</strong> of the way to target, the stop loss
+        ratchets up to lock in <strong>Trail % of profit</strong>. Prevents winners from turning into losers.
+      </p>
+      <div class="opt-controls three-col">
+        <div class="toggle-field">
+          <mat-slide-toggle [(ngModel)]="config.trailingSlEnabled" color="accent">
+            Enable Trailing SL
+          </mat-slide-toggle>
+        </div>
+        <mat-form-field appearance="outline" class="opt-field">
+          <mat-label>Activation (% to target)</mat-label>
+          <input matInput type="number" [(ngModel)]="config.trailingActivationPct"
+                 [disabled]="!config.trailingSlEnabled" min="10" max="90">
+          <span matSuffix>%</span>
+          <mat-hint>e.g. 50 = half way to target</mat-hint>
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="opt-field">
+          <mat-label>Trail (% of profit)</mat-label>
+          <input matInput type="number" [(ngModel)]="config.trailingTrailPct"
+                 [disabled]="!config.trailingSlEnabled" min="10" max="90">
+          <span matSuffix>%</span>
+          <mat-hint>e.g. 50 = lock in half the gain</mat-hint>
+        </mat-form-field>
+      </div>
+    </div>
+  </mat-expansion-panel>
+
+  <div class="save-row">
+    <button mat-raised-button color="primary" (click)="saveConfig()" [disabled]="loading">
+      <mat-icon>save</mat-icon> Save All Settings
+    </button>
+  </div>
+
+  <!-- ── Open Positions ─────────────────────────────────────────────────── -->
+  <mat-card class="ob-card">
+    <mat-card-header>
+      <mat-card-title class="section-title">
+        Open Positions
+        <mat-chip class="count-chip">{{ openTrades.length }}</mat-chip>
+      </mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <div *ngIf="openTrades.length === 0" class="empty-state">No open positions</div>
+      <table *ngIf="openTrades.length > 0" mat-table [dataSource]="openTrades" class="ob-table">
+
+        <ng-container matColumnDef="symbol">
+          <th mat-header-cell *matHeaderCellDef>Symbol</th>
+          <td mat-cell *matCellDef="let t">
+            <div class="symbol-cell">
+              <span class="option-sym">{{ t.optionSymbol || '—' }}</span>
+              <span class="source-tag">{{ getSourceLabel(t.signalSource) }}</span>
+            </div>
+          </td>
+        </ng-container>
+
+        <ng-container matColumnDef="type">
+          <th mat-header-cell *matHeaderCellDef>Type</th>
+          <td mat-cell *matCellDef="let t">
+            <mat-chip [class]="t.optionType === 'CE' ? 'chip-ce' : 'chip-pe'">
+              {{ t.optionType }} {{ t.signalType }}
+            </mat-chip>
+          </td>
+        </ng-container>
+
+        <ng-container matColumnDef="entry">
+          <th mat-header-cell *matHeaderCellDef>Entry</th>
+          <td mat-cell *matCellDef="let t">{{ formatPrice(t.entryPrice) }}</td>
+        </ng-container>
+
+        <ng-container matColumnDef="target">
+          <th mat-header-cell *matHeaderCellDef>Target</th>
+          <td mat-cell *matCellDef="let t" class="pnl-positive">{{ formatPrice(t.targetPrice) }}</td>
+        </ng-container>
+
+        <ng-container matColumnDef="sl">
+          <th mat-header-cell *matHeaderCellDef>SL</th>
+          <td mat-cell *matCellDef="let t" class="pnl-negative">{{ formatPrice(t.stopLossPrice) }}</td>
+        </ng-container>
+
+        <ng-container matColumnDef="pnl">
+          <th mat-header-cell *matHeaderCellDef>Lots</th>
+          <td mat-cell *matCellDef="let t">{{ t.numLots }} × 65</td>
+        </ng-container>
+
+        <ng-container matColumnDef="action">
+          <th mat-header-cell *matHeaderCellDef></th>
+          <td mat-cell *matCellDef="let t">
+            <span class="status-chip open">OPEN</span>
+          </td>
+        </ng-container>
+
+        <tr mat-header-row *matHeaderRowDef="openTradesColumns"></tr>
+        <tr mat-row *matRowDef="let row; columns: openTradesColumns;"></tr>
+      </table>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- ── Today's Trades ─────────────────────────────────────────────────── -->
+  <mat-expansion-panel class="ob-panel">
+    <mat-expansion-panel-header>
+      <mat-panel-title>
+        Today's Trades
+        <mat-chip class="count-chip-sm">{{ todayTrades.length }}</mat-chip>
+      </mat-panel-title>
+    </mat-expansion-panel-header>
+
+    <div *ngIf="todayTrades.length === 0" class="empty-state">No trades today</div>
+    <table *ngIf="todayTrades.length > 0" mat-table [dataSource]="todayTrades" class="ob-table">
+
+      <ng-container matColumnDef="symbol">
+        <th mat-header-cell *matHeaderCellDef>Symbol</th>
+        <td mat-cell *matCellDef="let t">
+          <div class="symbol-cell">
+            <span class="option-sym">{{ t.optionSymbol || '—' }}</span>
+            <span class="source-tag">{{ getSourceLabel(t.signalSource) }}</span>
+          </div>
+        </td>
+      </ng-container>
+
+      <ng-container matColumnDef="type">
+        <th mat-header-cell *matHeaderCellDef>Type</th>
+        <td mat-cell *matCellDef="let t">
+          <mat-chip [class]="t.optionType === 'CE' ? 'chip-ce' : 'chip-pe'">
+            {{ t.optionType }}
+          </mat-chip>
+        </td>
+      </ng-container>
+
+      <ng-container matColumnDef="entry">
+        <th mat-header-cell *matHeaderCellDef>Entry</th>
+        <td mat-cell *matCellDef="let t">{{ formatPrice(t.entryPrice) }}</td>
+      </ng-container>
+
+      <ng-container matColumnDef="exit">
+        <th mat-header-cell *matHeaderCellDef>Exit</th>
+        <td mat-cell *matCellDef="let t">{{ formatPrice(t.exitPrice) }}</td>
+      </ng-container>
+
+      <ng-container matColumnDef="pnl">
+        <th mat-header-cell *matHeaderCellDef>P&L</th>
+        <td mat-cell *matCellDef="let t" [class]="getPnlClass(t.netPnl)">
+          {{ formatPnl(t.netPnl) }}
+        </td>
+      </ng-container>
+
+      <ng-container matColumnDef="reason">
+        <th mat-header-cell *matHeaderCellDef>Exit Reason</th>
+        <td mat-cell *matCellDef="let t">
+          <span class="exit-reason">{{ t.exitReason || t.status }}</span>
+        </td>
+      </ng-container>
+
+      <tr mat-header-row *matHeaderRowDef="todayTradesColumns"></tr>
+      <tr mat-row *matRowDef="let row; columns: todayTradesColumns;"></tr>
+    </table>
+  </mat-expansion-panel>
+
+</div>
