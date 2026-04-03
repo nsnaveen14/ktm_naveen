@@ -29,7 +29,7 @@ dependencies {
 	implementation group: 'com.zerodhatech.kiteconnect', name: 'kiteconnect', version: '3.5.1'
 	implementation group: 'com.fasterxml.jackson.core' , name: 'jackson-databind', version: '2.17.2'
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
-	implementation(project(":ktm-ui"))
+	implementation(project(":kpn-ui"))
 	compileOnly 'org.projectlombok:lombok'
 	runtimeOnly 'com.h2database:h2'
 	annotationProcessor 'org.projectlombok:lombok'
@@ -67,7 +67,7 @@ tasks.withType(JavaCompile) {
 }
 
 // Define the source and destination directories
-def sourceDir = file('ktm-ui/dist/ktm-ui/browser')
+def sourceDir = file('kpn-ui/dist/kpn-ui/browser')
 //def sourceDir = file('src/main/resources/public')
 def destinationDir = file('src/main/resources/static')
 

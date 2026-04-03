@@ -3,7 +3,7 @@
 
 **Version:** 2.2  
 **Last Updated:** February 22, 2026  
-**Module:** KTManager Trading Platform
+**Module:** KPN Trading Platform
 
 ---
 
@@ -29,7 +29,7 @@
 
 ## 1. Executive Summary
 
-**Brahmastra** is a sophisticated intraday trading strategy implemented within the KTManager platform. It employs a **Triple Confirmation** approach combining three powerful technical indicators to generate high-probability trading signals for Indian equity indices (NIFTY, BANKNIFTY, SENSEX).
+**Brahmastra** is a sophisticated intraday trading strategy implemented within the KPN platform. It employs a **Triple Confirmation** approach combining three powerful technical indicators to generate high-probability trading signals for Indian equity indices (NIFTY, BANKNIFTY, SENSEX).
 
 ### Key Features
 - **Triple Confirmation Signals**: Requires alignment of Supertrend, MACD, and VWAP
@@ -411,7 +411,7 @@ The Dashboard tab now includes an **Option Chain Insights** section with:
 ### 5.2 Package Structure
 
 ```
-src/main/java/com/trading/kalyani/KTManager/
+src/main/java/com/trading/kalyani/KPN/
 ├── controller/
 │   └── BrahmastraController.java        # REST API endpoints
 ├── service/
@@ -491,7 +491,7 @@ public class BrahmastraServiceImpl implements BrahmastraService {
 ### 6.2 Component Structure
 
 ```
-ktm-ui/src/app/
+kpn-ui/src/app/
 ├── components/
 │   └── brahmastra/
 │       ├── brahmastra.component.ts      # Main component (1050+ lines)
@@ -1361,12 +1361,12 @@ Implementation:
 ### 15.4 Contact
 
 For questions or contributions related to the Brahmastra strategy:
-- Review the codebase at `/src/main/java/com/trading/kalyani/KTManager/`
-- Check the UI components at `/ktm-ui/src/app/components/brahmastra/`
+- Review the codebase at `/src/main/java/com/trading/kalyani/KPN/`
+- Check the UI components at `/kpn-ui/src/app/components/brahmastra/`
 
 ---
 
 **Document Generated:** February 21, 2026  
-**Author:** KTManager Development Team  
+**Author:** KPN Development Team  
 **Classification:** Internal Technical Documentation
 

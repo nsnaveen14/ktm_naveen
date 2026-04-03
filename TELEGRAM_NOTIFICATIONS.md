@@ -1,6 +1,6 @@
 # Telegram Notification Framework
 
-This document explains how to set up and use the Telegram notification framework in KTManager.
+This document explains how to set up and use the Telegram notification framework in KPN.
 
 ## Overview
 

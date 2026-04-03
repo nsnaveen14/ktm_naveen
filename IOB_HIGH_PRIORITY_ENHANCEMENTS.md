@@ -3,7 +3,7 @@
 ## Document Information
 - **Version:** 1.0
 - **Date:** January 18, 2026
-- **Author:** KTManager Development Team
+- **Author:** KPN Development Team
 - **Status:** Implemented
 
 ---
@@ -990,7 +990,7 @@ public Integer calculatePositionSize(Double entryPrice, Double stopLoss, Double 
 
 ### IOB Performance Component
 
-**Location:** `ktm-ui/src/app/components/iob-performance/`
+**Location:** `kpn-ui/src/app/components/iob-performance/`
 
 **Tabs:**
 1. **Dashboard** - Auto-trade toggle, risk indicators, today's summary, MTF bias

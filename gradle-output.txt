@@ -1,14 +1,14 @@
 Starting a Gradle Daemon, 3 incompatible Daemons could not be reused, use --status for details
-> Task :ktm-ui:compileJava NO-SOURCE
-> Task :ktm-ui:processResources NO-SOURCE
-> Task :ktm-ui:classes UP-TO-DATE
-> Task :ktm-ui:nodeSetup UP-TO-DATE
-> Task :ktm-ui:npmSetup UP-TO-DATE
-> Task :ktm-ui:npmInstall UP-TO-DATE
+> Task :kpn-ui:compileJava NO-SOURCE
+> Task :kpn-ui:processResources NO-SOURCE
+> Task :kpn-ui:classes UP-TO-DATE
+> Task :kpn-ui:nodeSetup UP-TO-DATE
+> Task :kpn-ui:npmSetup UP-TO-DATE
+> Task :kpn-ui:npmInstall UP-TO-DATE
 
-> Task :ktm-ui:npm_run_build
+> Task :kpn-ui:npm_run_build
 
-> ktm-ui@0.0.0 build
+> kpn-ui@0.0.0 build
 > ng build
 
 [33m>[39m Building...
@@ -44,40 +44,40 @@ Application bundle generation complete. [13.440 seconds]
   .btn-group>+.btn -> Did not expect successive traversals.[0m
 
 [39m[22m
-Output location: C:\Users\Administrator\IdeaProjects\KTManager\ktm-ui\dist\ktm-ui
+Output location: C:\Users\Administrator\IdeaProjects\KPN\kpn-ui\dist\kpn-ui
 
 
-> Task :ktm-ui:jar UP-TO-DATE
+> Task :kpn-ui:jar UP-TO-DATE
 
 > Task :compileJava FAILED
-C:\Users\Administrator\IdeaProjects\KTManager\src\main\java\com\trading\kalyani\KTManager\service\serviceImpl\SimulatedTradingServiceImpl.java:536: error: unnamed classes are a preview feature and are disabled by default.
+C:\Users\Administrator\IdeaProjects\KPN\src\main\java\com\trading\kalyani\KPN\service\serviceImpl\SimulatedTradingServiceImpl.java:536: error: unnamed classes are a preview feature and are disabled by default.
     private boolean validateSignalWithGEX(String tradeDirection) {
             ^
   (use --enable-preview to enable unnamed classes)
-C:\Users\Administrator\IdeaProjects\KTManager\src\main\java\com\trading\kalyani\KTManager\service\serviceImpl\SimulatedTradingServiceImpl.java:1576: error: class, interface, enum, or record expected
+C:\Users\Administrator\IdeaProjects\KPN\src\main\java\com\trading\kalyani\KPN\service\serviceImpl\SimulatedTradingServiceImpl.java:1576: error: class, interface, enum, or record expected
 }
 ^
-C:\Users\Administrator\IdeaProjects\KTManager\src\main\java\com\trading\kalyani\KTManager\service\serviceImpl\SimulatedTradingServiceImpl.java:1: error: unnamed class should not have package declaration
-package com.trading.kalyani.KTManager.service.serviceImpl;
+C:\Users\Administrator\IdeaProjects\KPN\src\main\java\com\trading\kalyani\KPN\service\serviceImpl\SimulatedTradingServiceImpl.java:1: error: unnamed class should not have package declaration
+package com.trading.kalyani.KPN.service.serviceImpl;
 ^
 3 errors
 
-[Incubating] Problems report is available at: file:///C:/Users/Administrator/IdeaProjects/KTManager/build/reports/problems/problems-report.html
+[Incubating] Problems report is available at: file:///C:/Users/Administrator/IdeaProjects/KPN/build/reports/problems/problems-report.html
 
 FAILURE: Build failed with an exception.
 
 * What went wrong:
 Execution failed for task ':compileJava'.
 > Compilation failed; see the compiler output below.
-  C:\Users\Administrator\IdeaProjects\KTManager\src\main\java\com\trading\kalyani\KTManager\service\serviceImpl\SimulatedTradingServiceImpl.java:536: error: unnamed classes are a preview feature and are disabled by default.
+  C:\Users\Administrator\IdeaProjects\KPN\src\main\java\com\trading\kalyani\KPN\service\serviceImpl\SimulatedTradingServiceImpl.java:536: error: unnamed classes are a preview feature and are disabled by default.
       private boolean validateSignalWithGEX(String tradeDirection) {
               ^
     (use --enable-preview to enable unnamed classes)
-  C:\Users\Administrator\IdeaProjects\KTManager\src\main\java\com\trading\kalyani\KTManager\service\serviceImpl\SimulatedTradingServiceImpl.java:1576: error: class, interface, enum, or record expected
+  C:\Users\Administrator\IdeaProjects\KPN\src\main\java\com\trading\kalyani\KPN\service\serviceImpl\SimulatedTradingServiceImpl.java:1576: error: class, interface, enum, or record expected
   }
   ^
-  C:\Users\Administrator\IdeaProjects\KTManager\src\main\java\com\trading\kalyani\KTManager\service\serviceImpl\SimulatedTradingServiceImpl.java:1: error: unnamed class should not have package declaration
-  package com.trading.kalyani.KTManager.service.serviceImpl;
+  C:\Users\Administrator\IdeaProjects\KPN\src\main\java\com\trading\kalyani\KPN\service\serviceImpl\SimulatedTradingServiceImpl.java:1: error: unnamed class should not have package declaration
+  package com.trading.kalyani.KPN.service.serviceImpl;
   ^
   3 errors
 

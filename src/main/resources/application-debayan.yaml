@@ -7,7 +7,7 @@ spring:
       client:
         url: http://localhost:8080
   application:
-    name: KTManager
+    name: KPN
   datasource:
     url: jdbc:postgresql://localhost:5432/KalyaniTradingApp?currentSchema=realtime
     username: 

@@ -14,7 +14,7 @@ All issues have been fixed:
 ### 1. Start the Application
 
 ```bash
-cd C:\Users\Administrator\IdeaProjects\KTManager
+cd C:\Users\Administrator\IdeaProjects\KPN
 ./gradlew bootRun
 ```
 

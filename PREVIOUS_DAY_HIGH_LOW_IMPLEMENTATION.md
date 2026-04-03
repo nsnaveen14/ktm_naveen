@@ -8,17 +8,17 @@ This document summarizes the implementation of displaying previous day high and 
 ### 1. Backend Changes
 
 #### A. New Model Class
-**File**: `src/main/java/com/trading/kalyani/KTManager/model/PreviousDayHighLowResponse.java`
+**File**: `src/main/java/com/trading/kalyani/KPN/model/PreviousDayHighLowResponse.java`
 - Created a new response model to encapsulate previous day OHLC data
 - Fields: success, message, instrumentToken, date, high, low, open, close
 
 #### B. Service Interface
-**File**: `src/main/java/com/trading/kalyani/KTManager/service/InstrumentService.java`
+**File**: `src/main/java/com/trading/kalyani/KPN/service/InstrumentService.java`
 - Added method: `PreviousDayHighLowResponse getPreviousDayHighLow(String instrumentToken)`
 - This method fetches the previous trading day's high, low, open, and close values
 
 #### C. Service Implementation
-**File**: `src/main/java/com/trading/kalyani/KTManager/service/serviceImpl/InstrumentServiceImpl.java`
+**File**: `src/main/java/com/trading/kalyani/KPN/service/serviceImpl/InstrumentServiceImpl.java`
 - Implemented `getPreviousDayHighLow()` method
 - Logic:
   - Calculates previous trading day (skips weekends)
@@ -27,13 +27,13 @@ This document summarizes the implementation of displaying previous day high and 
   - Returns the data in a structured response
 
 #### D. Controller Endpoint
-**File**: `src/main/java/com/trading/kalyani/KTManager/controller/InstrumentController.java`
+**File**: `src/main/java/com/trading/kalyani/KPN/controller/InstrumentController.java`
 - Added REST endpoint: `GET /getPreviousDayHighLow?instrumentToken={token}`
 - Logs execution time and success status
 - Returns HTTP 200 for success, 400 for failure
 
 #### E. Live Tick Data Enhancement
-**File**: `src/main/java/com/trading/kalyani/KTManager/service/serviceImpl/CandlePredictionServiceImpl.java`
+**File**: `src/main/java/com/trading/kalyani/KPN/service/serviceImpl/CandlePredictionServiceImpl.java`
 - Modified `getLiveTickData()` method to include previous day data
 - Added fields to response: previousDayHigh, previousDayLow, previousDayOpen, previousDayClose
 - Fetches previous day data for NIFTY_INSTRUMENT_TOKEN (256265L)
@@ -42,7 +42,7 @@ This document summarizes the implementation of displaying previous day high and 
 ### 2. Frontend Changes
 
 #### A. TypeScript Model
-**File**: `ktm-ui/src/app/models/analytics.model.ts`
+**File**: `kpn-ui/src/app/models/analytics.model.ts`
 - Updated `LiveTickData` interface to include:
   - `previousDayHigh?: number`
   - `previousDayLow?: number`
@@ -50,14 +50,14 @@ This document summarizes the implementation of displaying previous day high and 
   - `previousDayClose?: number`
 
 #### B. Component HTML
-**File**: `ktm-ui/src/app/components/live-tick/live-tick.component.html`
+**File**: `kpn-ui/src/app/components/live-tick/live-tick.component.html`
 - Added new section to display previous day levels below the NIFTY LTP
 - Shows "Prev Day: H: {high} L: {low}" format
 - Includes Material tooltips for better UX
 - Conditionally displays only if data is available
 
 #### C. Component CSS
-**File**: `ktm-ui/src/app/components/live-tick/live-tick.component.css`
+**File**: `kpn-ui/src/app/components/live-tick/live-tick.component.css`
 - Added styles for `.prev-day-levels` container
 - Previous day high displayed in green (#00ff7f)
 - Previous day low displayed in red (#ff6b6b)
@@ -69,8 +69,8 @@ This document summarizes the implementation of displaying previous day high and 
 
 #### Where the Changes Appear
 The `<app-live-tick>` component is used in:
-1. **Analytics Tab**: `ktm-ui/src/app/components/analytics/analytics.component.html`
-2. **Trading Tab**: `ktm-ui/src/app/components/trading/trading.component.html`
+1. **Analytics Tab**: `kpn-ui/src/app/components/analytics/analytics.component.html`
+2. **Trading Tab**: `kpn-ui/src/app/components/trading/trading.component.html`
 
 Both tabs will automatically show the previous day high/low values in the live ticker section.
 

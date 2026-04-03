@@ -114,7 +114,7 @@ spring:
 
 3. **Start Backend**:
 ```bash
-cd KTManager
+cd KPN
 ./gradlew bootRun
 ```
 
@@ -122,7 +122,7 @@ cd KTManager
 
 1. **Install Dependencies**:
 ```bash
-cd ktm-ui
+cd kpn-ui
 npm install
 ```
 
@@ -441,7 +441,7 @@ Proprietary - For internal use only
 
 ## Credits
 
-Developed for KTManager Trading Platform  
+Developed for KPN Trading Platform  
 Strategy Design: Professional Options Trader  
 Implementation: AI-Assisted Development  
 Version: 1.0.0  

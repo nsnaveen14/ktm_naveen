@@ -213,7 +213,7 @@ I want the trade set up information to be saved in a new table. I also need anot
 
 Summary of Changes
 1. New Entity: TradeSetupEntity.java
-Located at: src/main/java/com/trading/kalyani/KTManager/entity/TradeSetupEntity.java
+Located at: src/main/java/com/trading/kalyani/KPN/entity/TradeSetupEntity.java
 This entity stores complete trade setup information including:
 Trade direction (BUY/SELL/NONE)
 Entry price, type, and reason
@@ -225,7 +225,7 @@ Market context (trend, SMC bias, channel type, Fib level, PCR, max pain)
 Validity tracking
 Outcome tracking (execution, exit, profit/loss)
 2. New Repository: TradeSetupRepository.java
-Located at: src/main/java/com/trading/kalyani/KTManager/repository/TradeSetupRepository.java
+Located at: src/main/java/com/trading/kalyani/KPN/repository/TradeSetupRepository.java
 Provides methods to:
 Find latest valid/recent trade setup
 Find today's setups
@@ -293,7 +293,7 @@ GET /api/prediction/trade-setup/performance
 I want to create a new service called CandlePredictionService which should have functions to perform the core operations for the NIFTY_INSTRUMENT_TOKEN to predict the next five 1 min candles (store in the PredictedCandleStick table) based on the past CandleStick table data of last 2 hours, option chain (stored in MiniDelta object), latest tick data stored in tickerMapForJob object in KiteTickerProvider class, IndexLTP object which contain other important parameters like support, resistance, range, maxpain etc. This functionality should be developed as per the Indian stock market and related parameters and should provide me an edge when I am doing intrda-day option trading.
 
 1. New Entity - PredictionDeviation.java
-Location: src/main/java/com/trading/kalyani/KTManager/entity/PredictionDeviation.java
+Location: src/main/java/com/trading/kalyani/KPN/entity/PredictionDeviation.java
 Stores deviation statistics including:
 Close price deviation metrics (avg, max, min, std dev)
 Direction accuracy tracking (bullish/bearish correct predictions)
@@ -303,14 +303,14 @@ Market context (PCR, VIX, market hour, expiry day)
 Sequence-wise deviations (for each of the 5 predicted candles)
 Correction factors for improving predictions
 2. New Repository - PredictionDeviationRepository.java
-Location: src/main/java/com/trading/kalyani/KTManager/repository/PredictionDeviationRepository.java
+Location: src/main/java/com/trading/kalyani/KPN/repository/PredictionDeviationRepository.java
 Query methods for:
 Finding latest/recent deviations
 Time-based analysis (market hour, expiry day)
 Calculating correction factors
 Cleanup operations
 3. New Scheduler - CandlePredictionScheduler.java
-Location: src/main/java/com/trading/kalyani/KTManager/config/CandlePredictionScheduler.java
+Location: src/main/java/com/trading/kalyani/KPN/config/CandlePredictionScheduler.java
 Prediction Job: Runs every minute during market hours (9:16 AM - 3:29 PM)
 Verification Job: Runs every 15 minutes to verify predictions and calculate deviations
 Morning Initialization: Starts the job at 9:14 AM
@@ -502,7 +502,7 @@ Gamma Walls:
 Call Wall = Resistance (highest call OI)
 Put Wall = Support (highest put OI)
 
-There are 9 distinct signal-generation mechanisms in the application (file src/main/java/com/trading/kalyani/KTManager/service/serviceImpl/CandlePredictionServiceImpl.java). Each uses different data and logic — below is a concise enumeration and how each produces trade signals.
+There are 9 distinct signal-generation mechanisms in the application (file src/main/java/com/trading/kalyani/KPN/service/serviceImpl/CandlePredictionServiceImpl.java). Each uses different data and logic — below is a concise enumeration and how each produces trade signals.
 Technical indicators (intraday TA)
 Source: calculateTechnicalIndicators(...), calculateEMA, calculateRSI, calculateATR, momentum, VWAP, swingHigh/swingLow.
 Signals: EMA9/EMA21 crossover, RSI extremes (overbought/oversold), momentum direction, ATR-based volatility — used to bias/score trades.

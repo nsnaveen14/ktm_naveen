@@ -317,7 +317,7 @@ target3 = entryPrice + (riskPoints * 4.0)  // 1:4.0 RR
 
 ### Component: `IobAnalysisComponent`
 
-**Location:** `ktm-ui/src/app/components/iob-analysis/`
+**Location:** `kpn-ui/src/app/components/iob-analysis/`
 
 **Features:**
 - Dashboard view with NIFTY/SENSEX tabs
@@ -1160,4 +1160,4 @@ The scope of improvements outlined above can transform this into a comprehensive
 
 *Document Version: 2.0*  
 *Last Updated: January 18, 2026*  
-*Author: KTManager Development Team*
+*Author: KPN Development Team*

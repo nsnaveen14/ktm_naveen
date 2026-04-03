@@ -128,21 +128,21 @@ AND (if PCR enabled) PCR <= 1.2 (Not strongly bullish)
 ## Files Created
 
 ### Backend
-- `src/main/java/com/trading/kalyani/KTManager/dto/brahmastra/` (DTOs)
-- `src/main/java/com/trading/kalyani/KTManager/entity/BrahmastraSignal.java`
-- `src/main/java/com/trading/kalyani/KTManager/entity/BrahmastraBacktestResult.java`
-- `src/main/java/com/trading/kalyani/KTManager/repository/BrahmastraSignalRepository.java`
-- `src/main/java/com/trading/kalyani/KTManager/repository/BrahmastraBacktestResultRepository.java`
-- `src/main/java/com/trading/kalyani/KTManager/service/BrahmastraService.java`
-- `src/main/java/com/trading/kalyani/KTManager/service/serviceImpl/BrahmastraServiceImpl.java`
-- `src/main/java/com/trading/kalyani/KTManager/controller/BrahmastraController.java`
+- `src/main/java/com/trading/kalyani/KPN/dto/brahmastra/` (DTOs)
+- `src/main/java/com/trading/kalyani/KPN/entity/BrahmastraSignal.java`
+- `src/main/java/com/trading/kalyani/KPN/entity/BrahmastraBacktestResult.java`
+- `src/main/java/com/trading/kalyani/KPN/repository/BrahmastraSignalRepository.java`
+- `src/main/java/com/trading/kalyani/KPN/repository/BrahmastraBacktestResultRepository.java`
+- `src/main/java/com/trading/kalyani/KPN/service/BrahmastraService.java`
+- `src/main/java/com/trading/kalyani/KPN/service/serviceImpl/BrahmastraServiceImpl.java`
+- `src/main/java/com/trading/kalyani/KPN/controller/BrahmastraController.java`
 
 ### Frontend
-- `ktm-ui/src/app/models/brahmastra.model.ts`
-- `ktm-ui/src/app/services/brahmastra.service.ts`
-- `ktm-ui/src/app/components/brahmastra/brahmastra.component.ts`
-- `ktm-ui/src/app/components/brahmastra/brahmastra.component.html`
-- `ktm-ui/src/app/components/brahmastra/brahmastra.component.css`
+- `kpn-ui/src/app/models/brahmastra.model.ts`
+- `kpn-ui/src/app/services/brahmastra.service.ts`
+- `kpn-ui/src/app/components/brahmastra/brahmastra.component.ts`
+- `kpn-ui/src/app/components/brahmastra/brahmastra.component.html`
+- `kpn-ui/src/app/components/brahmastra/brahmastra.component.css`
 
 ### Modified Files
 - `ApplicationConstants.java` - Added `BRAHMASTRA_SIGNAL_TOPIC`

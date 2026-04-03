@@ -271,7 +271,7 @@ Filters: Minimal
 - **Full Guide**: `BOBD_IMPLEMENTATION_GUIDE.md`
 - **Summary**: `BOBD_IMPLEMENTATION_SUMMARY.md`
 - **Code**: `src/.../BOBDFailureServiceImpl.java`
-- **UI**: `ktm-ui/src/app/components/bobd-failures/`
+- **UI**: `kpn-ui/src/app/components/bobd-failures/`
 
 ## 🎓 Remember
 

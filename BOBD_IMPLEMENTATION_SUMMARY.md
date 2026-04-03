@@ -246,13 +246,13 @@ GET  /api/bobd/backtest/compare
 
 ### 1. Backend
 ```bash
-cd KTManager
+cd KPN
 ./gradlew bootRun
 ```
 
 ### 2. Frontend
 ```bash
-cd ktm-ui
+cd kpn-ui
 npm install
 npm start
 ```

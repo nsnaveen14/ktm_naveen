@@ -746,7 +746,7 @@ CREATE TABLE risk_management (
 ### 7.1 Component Structure
 
 ```
-ktm-ui/src/app/components/
+kpn-ui/src/app/components/
 ├── iob-analysis/
 │   ├── iob-analysis.component.ts      # Main IOB dashboard
 │   ├── iob-analysis.component.html
@@ -1314,7 +1314,7 @@ The following classes log to the dedicated IOB file:
 ### 16.1 File Structure
 
 ```
-src/main/java/com/trading/kalyani/KTManager/
+src/main/java/com/trading/kalyani/KPN/
 ├── config/
 │   └── IOBScheduler.java
 ├── constants/
@@ -1357,7 +1357,7 @@ src/main/java/com/trading/kalyani/KTManager/
     ├── PerformanceTrackingServiceImpl.java
     └── BacktestingServiceImpl.java
 
-ktm-ui/src/app/
+kpn-ui/src/app/
 ├── components/
 │   ├── iob-analysis/
 │   ├── iob-chart/
@@ -1439,5 +1439,5 @@ The `<app-live-tick>` component was added to the Brahmastra tab header, providin
 *Document Version: 4.0*  
 *Created: January 19, 2026*  
 *Last Updated: February 23, 2026*  
-*Author: KTManager Development Team*  
+*Author: KPN Development Team*  
 *Latest Features: FVG 6-Factor Validation System (Section 12), Brahmastra Chart Fix & Live Tick (Section 17)*

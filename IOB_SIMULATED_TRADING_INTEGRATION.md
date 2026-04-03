@@ -4,7 +4,7 @@
 
 **Document Version:** 1.0  
 **Date:** February 8, 2026  
-**Author:** KTManager Development Team
+**Author:** KPN Development Team
 
 ---
 

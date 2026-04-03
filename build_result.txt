@@ -1,13 +1,13 @@
-> Task :ktm-ui:compileJava NO-SOURCE
-> Task :ktm-ui:processResources NO-SOURCE
-> Task :ktm-ui:classes UP-TO-DATE
-> Task :ktm-ui:nodeSetup UP-TO-DATE
-> Task :ktm-ui:npmSetup UP-TO-DATE
-> Task :ktm-ui:npmInstall UP-TO-DATE
+> Task :kpn-ui:compileJava NO-SOURCE
+> Task :kpn-ui:processResources NO-SOURCE
+> Task :kpn-ui:classes UP-TO-DATE
+> Task :kpn-ui:nodeSetup UP-TO-DATE
+> Task :kpn-ui:npmSetup UP-TO-DATE
+> Task :kpn-ui:npmInstall UP-TO-DATE
 
-> Task :ktm-ui:npm_run_build
+> Task :kpn-ui:npm_run_build
 
-> ktm-ui@0.0.0 build
+> kpn-ui@0.0.0 build
 > ng build
 
 [33m>[39m Building...
@@ -43,10 +43,10 @@ Application bundle generation complete. [13.389 seconds]
   .btn-group>+.btn -> Did not expect successive traversals.[0m
 
 [39m[22m
-Output location: C:\Users\Administrator\IdeaProjects\KTManager\ktm-ui\dist\ktm-ui
+Output location: C:\Users\Administrator\IdeaProjects\KPN\kpn-ui\dist\kpn-ui
 
 
-> Task :ktm-ui:jar UP-TO-DATE
+> Task :kpn-ui:jar UP-TO-DATE
 > Task :compileJava
 > Task :deleteDestinationDir
 > Task :copyResources
@@ -58,11 +58,11 @@ Output location: C:\Users\Administrator\IdeaProjects\KTManager\ktm-ui\dist\ktm-u
 > Task :assemble
 > Task :check
 > Task :build
-> Task :ktm-ui:assemble UP-TO-DATE
-> Task :ktm-ui:check
-> Task :ktm-ui:build
+> Task :kpn-ui:assemble UP-TO-DATE
+> Task :kpn-ui:check
+> Task :kpn-ui:build
 
-[Incubating] Problems report is available at: file:///C:/Users/Administrator/IdeaProjects/KTManager/build/reports/problems/problems-report.html
+[Incubating] Problems report is available at: file:///C:/Users/Administrator/IdeaProjects/KPN/build/reports/problems/problems-report.html
 
 Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
 
