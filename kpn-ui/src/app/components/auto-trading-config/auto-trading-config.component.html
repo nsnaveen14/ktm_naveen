@@ -60,8 +60,21 @@
           <mat-form-field appearance="outline">
             <mat-label>Entry Type</mat-label>
             <mat-select [(ngModel)]="config.entryType">
+              <mat-select-trigger>
+                <span class="select-trigger-row">
+                  <mat-icon class="opt-icon" [style.color]="getOptionColor(entryTypes, config.entryType)">
+                    {{getOptionIcon(entryTypes, config.entryType)}}
+                  </mat-icon>
+                  <span [style.color]="getOptionColor(entryTypes, config.entryType)">
+                    {{getOptionLabel(entryTypes, config.entryType)}}
+                  </span>
+                </span>
+              </mat-select-trigger>
               <mat-option *ngFor="let type of entryTypes; trackBy: trackByValue" [value]="type.value">
-                {{ type.label }}
+                <span class="select-opt-row">
+                  <mat-icon class="opt-icon" [style.color]="type.color">{{type.icon}}</mat-icon>
+                  <span [style.color]="type.color" class="opt-label">{{type.label}}</span>
+                </span>
               </mat-option>
             </mat-select>
           </mat-form-field>
@@ -147,8 +160,21 @@
           <mat-form-field appearance="outline" *ngIf="config.enableTrailingSL">
             <mat-label>Trail Trigger</mat-label>
             <mat-select [(ngModel)]="config.trailingSLTrigger">
+              <mat-select-trigger>
+                <span class="select-trigger-row">
+                  <mat-icon class="opt-icon" [style.color]="getOptionColor(trailTriggers, config.trailingSLTrigger)">
+                    {{getOptionIcon(trailTriggers, config.trailingSLTrigger)}}
+                  </mat-icon>
+                  <span [style.color]="getOptionColor(trailTriggers, config.trailingSLTrigger)">
+                    {{getOptionLabel(trailTriggers, config.trailingSLTrigger)}}
+                  </span>
+                </span>
+              </mat-select-trigger>
               <mat-option *ngFor="let trigger of trailTriggers; trackBy: trackByValue" [value]="trigger.value">
-                {{ trigger.label }}
+                <span class="select-opt-row">
+                  <mat-icon class="opt-icon" [style.color]="trigger.color">{{trigger.icon}}</mat-icon>
+                  <span [style.color]="trigger.color" class="opt-label">{{trigger.label}}</span>
+                </span>
               </mat-option>
             </mat-select>
           </mat-form-field>
@@ -170,8 +196,21 @@
           <mat-form-field appearance="outline">
             <mat-label>Default Exit Target</mat-label>
             <mat-select [(ngModel)]="config.defaultExitTarget">
+              <mat-select-trigger>
+                <span class="select-trigger-row">
+                  <mat-icon class="opt-icon" [style.color]="getOptionColor(exitTargets, config.defaultExitTarget)">
+                    {{getOptionIcon(exitTargets, config.defaultExitTarget)}}
+                  </mat-icon>
+                  <span [style.color]="getOptionColor(exitTargets, config.defaultExitTarget)">
+                    {{getOptionLabel(exitTargets, config.defaultExitTarget)}}
+                  </span>
+                </span>
+              </mat-select-trigger>
               <mat-option *ngFor="let target of exitTargets; trackBy: trackByValue" [value]="target.value">
-                {{ target.label }}
+                <span class="select-opt-row">
+                  <mat-icon class="opt-icon" [style.color]="target.color">{{target.icon}}</mat-icon>
+                  <span [style.color]="target.color" class="opt-label">{{target.label}}</span>
+                </span>
               </mat-option>
             </mat-select>
           </mat-form-field>

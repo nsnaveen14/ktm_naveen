@@ -77,6 +77,11 @@ public class ZeroHeroSignalServiceImpl implements ZeroHeroSignalService {
 
     @Override
     public Map<String, Object> checkSignal(Map<String, Object> liveData) {
+        return checkSignal(liveData, 2);
+    }
+
+    @Override
+    public Map<String, Object> checkSignal(Map<String, Object> liveData, int minScore) {
         Map<String, Object> result = new HashMap<>();
         result.put("hasSignal", false);
 
@@ -136,20 +141,20 @@ public class ZeroHeroSignalServiceImpl implements ZeroHeroSignalService {
                     String.format("%.2f", ema9), String.format("%.2f", ema21),
                     String.format("%.2f", rsi), bullScore, bearScore);
 
-            // Need at least 2 out of 3 to agree
+            // Need at least minScore out of 3 to agree
             int score;
             String signalType;
             String optionType;
-            if (bullScore >= 2 && bullScore > bearScore) {
+            if (bullScore >= minScore && bullScore > bearScore) {
                 signalType = "BUY";
                 optionType = "CE";
                 score = bullScore;
-            } else if (bearScore >= 2 && bearScore > bullScore) {
+            } else if (bearScore >= minScore && bearScore > bullScore) {
                 signalType = "SELL";
                 optionType = "PE";
                 score = bearScore;
             } else {
-                logger.debug("ZeroHero: conflicting momentum — bull={} bear={} — no signal", bullScore, bearScore);
+                logger.debug("ZeroHero: conflicting momentum — bull={} bear={} (minScore={}) — no signal", bullScore, bearScore, minScore);
                 return result;
             }
 

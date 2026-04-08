@@ -1,14 +1,16 @@
 package com.trading.kalyani.KPN.service.serviceImpl;
 
+import com.trading.kalyani.KPN.entity.OptionBuyingConfig;
 import com.trading.kalyani.KPN.entity.SimulatedTrade;
 import com.trading.kalyani.KPN.entity.TradingLedger;
 import com.trading.kalyani.KPN.entity.InternalOrderBlock;
+import com.trading.kalyani.KPN.repository.OptionBuyingConfigRepository;
 import com.trading.kalyani.KPN.repository.SimulatedTradeRepository;
 import com.trading.kalyani.KPN.repository.TradingLedgerRepository;
 import com.trading.kalyani.KPN.repository.InternalOrderBlockRepository;
 import com.trading.kalyani.KPN.service.CandlePredictionService;
 
-import com.trading.kalyani.KPN.service.LiquiditySweepService;
+import com.trading.kalyani.KPN.service.TelegramNotificationService;
 import com.trading.kalyani.KPN.service.ZeroHeroSignalService;
 import com.trading.kalyani.KPN.service.InternalOrderBlockService;
 import com.trading.kalyani.KPN.service.SimulatedTradingService;
@@ -54,7 +56,9 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
     private static final LocalTime IOB_TRADE_ALLOWED_FROM = LocalTime.of(9, 45);
 
     // Trading configuration
-    private final AtomicBoolean autoTradingEnabled = new AtomicBoolean(true); // Enabled by default for auto trading
+    private final AtomicBoolean autoTradingEnabled    = new AtomicBoolean(true); // Enabled by default for auto trading
+    private final AtomicBoolean enableIobStrategy     = new AtomicBoolean(true); // IOB signal strategy on/off
+    private final AtomicBoolean enableZeroHeroStrategy= new AtomicBoolean(true); // ZeroHero signal strategy on/off
     private volatile double targetPercent = DEFAULT_TARGET_PERCENT;
     private volatile double stoplossPercent = DEFAULT_STOPLOSS_PERCENT;
     private volatile int numLots = DEFAULT_NUM_LOTS;
@@ -78,15 +82,18 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
     private CandlePredictionService candlePredictionService;
 
 
-    @Autowired
-    private LiquiditySweepService liquiditySweepService;
-
     @Lazy
     @Autowired
     private InternalOrderBlockService internalOrderBlockService;
 
     @Autowired(required = false)
     private ZeroHeroSignalService zeroHeroSignalService;
+
+    @Autowired(required = false)
+    private OptionBuyingConfigRepository optionBuyingConfigRepository;
+
+    @Autowired(required = false)
+    private TelegramNotificationService telegramNotificationService;
 
     @Autowired
     private InternalOrderBlockRepository internalOrderBlockRepository;
@@ -121,9 +128,10 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
         List<Map<String, Object>> actionableSignals = new ArrayList<>();
         List<Map<String, Object>> reverseSignals    = new ArrayList<>();
 
-        collectSignal(checkLiquiditySweepSignalWithReverseCheck(),  actionableSignals, reverseSignals);
-        collectSignal(checkIOBSignalWithReverseCheck(),             actionableSignals, reverseSignals);
-        collectSignal(checkZeroHeroSignalWithReverseCheck(),        actionableSignals, reverseSignals);
+        if (enableIobStrategy.get())
+            collectSignal(checkIOBSignalWithReverseCheck(),      actionableSignals, reverseSignals);
+        if (enableZeroHeroStrategy.get())
+            collectSignal(checkZeroHeroSignalWithReverseCheck(), actionableSignals, reverseSignals);
 
         result.put("allSignals",         actionableSignals);
         result.put("reverseSignals",     reverseSignals);
@@ -154,67 +162,6 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
         }
     }
 
-    private Map<String, Object> checkLiquiditySweepSignalWithReverseCheck() {
-        Map<String, Object> result = signalResult(SOURCE_LIQUIDITY_SWEEP);
-
-        try {
-            Map<String, Object> sweepSignal = liquiditySweepService.checkLiquiditySweepSignal(1);
-            if (sweepSignal == null || !Boolean.TRUE.equals(sweepSignal.get("hasSignal"))) {
-                return result;
-            }
-
-            String signalType = (String) sweepSignal.get("signalType");
-            if (signalType == null || signalType.equals("NONE")) {
-                return result;
-            }
-
-            String signalStrength = (String) sweepSignal.getOrDefault("signalStrength", "MODERATE");
-            Double confidence     = toDouble(sweepSignal, "confidence");
-            String whaleType      = (String) sweepSignal.get("whaleType");
-            String sweepType      = (String) sweepSignal.get("sweepType");
-
-            logger.debug("Liquidity Sweep - type: {}, strength: {}, confidence: {}, whale: {}",
-                    signalType, signalStrength, confidence, whaleType);
-
-            Optional<SimulatedTrade> openTrade = tradeRepository.findOpenTradeBySignalSource(SOURCE_LIQUIDITY_SWEEP);
-
-            if (openTrade.isPresent()) {
-                String existingDirection = openTrade.get().getSignalType();
-                if (isReverseSignal(existingDirection, signalType)) {
-                    result.put("hasReverseSignal", true);
-                    result.put("reverseTradeId", openTrade.get().getTradeId());
-                    result.put("signalType", signalType);
-                    result.put("signalStrength", signalStrength);
-                    result.put("confidence", confidence);
-                    result.put("whaleType", whaleType);
-                    result.put("sweepType", sweepType);
-                    logger.info("Liquidity Sweep reverse signal: {} -> {} for trade {}",
-                            existingDirection, signalType, openTrade.get().getTradeId());
-                }
-                return result; // open trade exists — no new entry regardless
-            }
-
-            // No open trade — hasSignal=true already guarantees isValidSetup (confidence >= 60)
-            result.put("hasSignal", true);
-            result.put("signalType", signalType);
-            result.put("signalStrength", signalStrength);
-            result.put("confidence", confidence);
-            result.put("whaleType", whaleType);
-            result.put("sweepType", sweepType);
-            result.put("entryPrice",     sweepSignal.get("entryPrice"));
-            result.put("stopLoss",       sweepSignal.get("stopLoss"));
-            result.put("takeProfit",     sweepSignal.get("takeProfit"));
-            result.put("suggestedOption",sweepSignal.get("suggestedOption"));
-            logger.info("Liquidity Sweep signal: {} ({}) confidence: {}% whale: {} sweep: {}",
-                    signalType, signalStrength, confidence, whaleType, sweepType);
-
-        } catch (Exception e) {
-            logger.error("Error checking Liquidity Sweep signal: {}", e.getMessage(), e);
-        }
-
-        return result;
-    }
-
     // Zero Hero: expiry day afternoon — buy cheap OTM option on momentum direction
     private Map<String, Object> checkZeroHeroSignalWithReverseCheck() {
         Map<String, Object> result = signalResult(SOURCE_ZERO_HERO);
@@ -223,7 +170,12 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
             Map<String, Object> liveData = candlePredictionService.getLiveTickData();
             if (liveData == null) return result;
 
-            Map<String, Object> signal = zeroHeroSignalService.checkSignal(liveData);
+            int minScore = 2;
+            if (optionBuyingConfigRepository != null) {
+                OptionBuyingConfig cfg = optionBuyingConfigRepository.findById(1L).orElse(null);
+                if (cfg != null && cfg.getZeroHeroMinScore() != null) minScore = cfg.getZeroHeroMinScore();
+            }
+            Map<String, Object> signal = zeroHeroSignalService.checkSignal(liveData, minScore);
             if (signal == null || !Boolean.TRUE.equals(signal.get("hasSignal"))) return result;
 
             String signalType     = (String) signal.get("signalType");
@@ -234,20 +186,25 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
             Optional<SimulatedTrade> openTrade = tradeRepository.findOpenTradeBySignalSource(SOURCE_ZERO_HERO);
             if (openTrade.isPresent()) return result;
 
-            if (isNewSignal(SOURCE_ZERO_HERO + "_" + signalType)) {
-                result.put("hasSignal",     true);
-                result.put("signalType",    signalType);
-                result.put("signalStrength",signalStrength);
-                result.put("optionType",    signal.get("optionType"));
-                result.put("strikePrice",   signal.get("strikePrice"));
-                result.put("entryPrice",    signal.get("optionPremium"));
-                result.put("stopLoss",      signal.get("stopLossPrice"));
-                result.put("takeProfit",    signal.get("targetPrice"));
-                result.put("momentumScore", signal.get("momentumScore"));
-                logger.info("ZeroHero signal: {} {} strike={} premium={} target={} score={}/3",
-                        signalType, signal.get("optionType"), signal.get("strikePrice"),
-                        signal.get("optionPremium"), signal.get("targetPrice"), signal.get("momentumScore"));
-            }
+            // Do NOT call isNewSignal here — it stamps the cooldown and causes
+            // the placement cooldown check in processNewSignals to block the trade.
+            // Cooldown is consumed exactly once, in processNewSignals.
+            result.put("hasSignal",     true);
+            result.put("signalType",    signalType);
+            result.put("signalStrength",signalStrength);
+            result.put("optionType",    signal.get("optionType"));
+            result.put("strikePrice",   signal.get("strikePrice"));
+            result.put("entryPrice",    signal.get("optionPremium"));
+            result.put("stopLoss",      signal.get("stopLossPrice"));
+            result.put("takeProfit",    signal.get("targetPrice"));
+            result.put("momentumScore", signal.get("momentumScore"));
+            result.put("ema9",          signal.get("ema9"));
+            result.put("ema21",         signal.get("ema21"));
+            result.put("rsi",           signal.get("rsi"));
+            result.put("confidence",    signal.get("confidence"));
+            logger.info("ZeroHero signal: {} {} strike={} premium={} target={} score={}/3",
+                    signalType, signal.get("optionType"), signal.get("strikePrice"),
+                    signal.get("optionPremium"), signal.get("targetPrice"), signal.get("momentumScore"));
         } catch (Exception e) {
             logger.error("Error checking ZeroHero signal: {}", e.getMessage(), e);
         }
@@ -404,8 +361,10 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
         if (currentPrice == null || iob.getZoneHigh() == null || iob.getZoneLow() == null) {
             return true;
         }
-        double tolerance = currentPrice * 0.005; // 0.5% of current price
-        return currentPrice < (iob.getZoneLow() - tolerance) || currentPrice > (iob.getZoneHigh() + tolerance);
+        // Price must be strictly within the zone — no tolerance buffer
+        // A BEARISH IOB zone is a resistance level; only enter when price rises INTO the zone.
+        // A BULLISH IOB zone is a support level; only enter when price falls INTO the zone.
+        return currentPrice < iob.getZoneLow() || currentPrice > iob.getZoneHigh();
     }
 
     /**
@@ -562,6 +521,7 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
                 .optionSymbol(atmOption.symbol())
                 .underlyingPriceAtEntry(niftyLTP)
                 .underlyingStopLoss(pricing.underlyingStopLoss())
+                .iobZoneMidpoint(iob.getZoneMidpoint())
                 .iobId(iob.getId())
                 .quantity(quantity)
                 .lotSize(NIFTY_LOT_SIZE)
@@ -686,6 +646,8 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
 
             subscribeOptionToken(trade.getOptionToken());
 
+            sendTradeOpenedTelegram(trade);
+
             logger.info("Trade placed successfully: {} | {} {} @ {} | Strike: {} | Target: {} | SL: {}",
                     tradeId, optionType, signalType, optionLTP, atmStrike, targetPrice, stopLossPrice);
 
@@ -805,8 +767,7 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
             }
 
             // Cooldown gate — only consumed here (placement path), never in read-only signal detectors
-            if (SOURCE_LIQUIDITY_SWEEP.equals(signalSource)
-                    || SOURCE_ZERO_HERO.equals(signalSource)) {
+            if (SOURCE_ZERO_HERO.equals(signalSource)) {
                 if (!isNewSignal(signalSource + "_" + signalType)) {
                     logger.info("processNewSignals: skipping {} {} — on cooldown", signalSource, signalType);
                     continue;
@@ -839,7 +800,95 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
             return iobId != null ? internalOrderBlockRepository.findById(iobId).map(this::placeIOBTrade).orElse(null) : null;
         }
 
+        if (SOURCE_ZERO_HERO.equals(signalSource)) {
+            return placeZeroHeroTrade(signal, signalType, signalStrength);
+        }
+
         return placeTrade(signalType, signalSource, signalStrength);
+    }
+
+    /** Places a ZeroHero trade using the OTM strike/premium/target/SL from the signal map. */
+    private SimulatedTrade placeZeroHeroTrade(Map<String, Object> signal,
+                                               String signalType, String signalStrength) {
+        try {
+            Map<String, Object> liveData = candlePredictionService.getLiveTickData();
+            if (liveData == null) {
+                logger.warn("ZeroHero: cannot place trade — live data unavailable");
+                return null;
+            }
+
+            Double niftyLTP  = toDouble(liveData, "niftyLTP");
+            Double vixValue  = toDouble(liveData, "vixValue");
+            if (niftyLTP == null || niftyLTP <= 0) {
+                logger.warn("ZeroHero: cannot place trade — NIFTY LTP unavailable");
+                return null;
+            }
+
+            String optionType = (String) signal.get("optionType");   // CE or PE
+            Integer strike    = signal.get("strikePrice") instanceof Number
+                    ? ((Number) signal.get("strikePrice")).intValue() : null;
+            Double premium    = toDouble(signal, "entryPrice");       // OTM premium
+            Double target     = toDouble(signal, "takeProfit");
+            Double sl         = toDouble(signal, "stopLoss");
+
+            if (premium == null || premium <= 0 || strike == null || optionType == null) {
+                logger.warn("ZeroHero: signal missing premium/strike/optionType — falling back to ATM");
+                return placeTrade(signalType, SOURCE_ZERO_HERO, signalStrength);
+            }
+
+            // Resolve OTM token + symbol from live data (populated by populateOtmOptions)
+            String ltpKey    = String.format("otm%s_%d_LTP", optionType, strike);
+            String tokenKey  = String.format("otm%s_%d_Token", optionType, strike);
+            String symbolKey = String.format("otm%s_%d_Symbol", optionType, strike);
+            Long   token     = liveData.get(tokenKey) instanceof Number
+                    ? ((Number) liveData.get(tokenKey)).longValue() : null;
+            String symbol    = liveData.get(symbolKey) instanceof String
+                    ? (String) liveData.get(symbolKey) : null;
+
+            // target/SL come from the signal (3× and 50% respectively); recalculate if missing
+            double resolvedTarget = target != null ? target : premium * 3.0;
+            double resolvedSL     = sl     != null ? sl     : premium * 0.5;
+
+            String tradeId = generateTradeId();
+            SimulatedTrade trade = SimulatedTrade.builder()
+                    .tradeId(tradeId)
+                    .tradeDate(LocalDateTime.now())
+                    .signalSource(SOURCE_ZERO_HERO)
+                    .signalType(signalType)
+                    .signalStrength(signalStrength)
+                    .optionType(optionType)
+                    .strikePrice(strike.doubleValue())
+                    .optionToken(token)
+                    .optionSymbol(symbol)
+                    .underlyingPriceAtEntry(niftyLTP)
+                    .quantity(quantity)
+                    .lotSize(NIFTY_LOT_SIZE)
+                    .numLots(numLots)
+                    .entryPrice(premium)
+                    .entryTime(LocalDateTime.now())
+                    .entryReason("ZeroHero OTM expiry trade " + signalType)
+                    .targetPrice(resolvedTarget)
+                    .stopLossPrice(resolvedSL)
+                    .riskRewardRatio(resolvedTarget / premium)
+                    .status(TRADE_STATUS_OPEN)
+                    .vixAtEntry(vixValue)
+                    .marketTrend("BUY".equals(signalType) ? "BULLISH" : "BEARISH")
+                    .peakPrice(premium)
+                    .build();
+
+            trade = tradeRepository.save(trade);
+            subscribeOptionToken(token);
+
+            sendZeroHeroTradeAlert(trade, signal);
+
+            logger.info("ZeroHero trade placed: {} {} strike={} premium={} target={} SL={}",
+                    tradeId, optionType, strike, premium, resolvedTarget, resolvedSL);
+            return trade;
+
+        } catch (Exception e) {
+            logger.error("ZeroHero: error placing trade: {}", e.getMessage(), e);
+            return null;
+        }
     }
 
     /**
@@ -955,14 +1004,6 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
 
             Map<String, Map<String, Object>> reverseSignals = new HashMap<>();
 
-
-            if (openTradeSources.contains(SOURCE_LIQUIDITY_SWEEP)) {
-                Map<String, Object> liquiditySweepCheck = checkLiquiditySweepSignalWithReverseCheck();
-                if (Boolean.TRUE.equals(liquiditySweepCheck.get("hasReverseSignal"))) {
-                    reverseSignals.put(SOURCE_LIQUIDITY_SWEEP, liquiditySweepCheck);
-                }
-            }
-
             if (openTradeSources.contains(SOURCE_IOB_SIGNAL)) {
                 Map<String, Object> iobCheck = checkIOBSignalWithReverseCheck();
                 if (Boolean.TRUE.equals(iobCheck.get("hasReverseSignal"))) {
@@ -1017,6 +1058,8 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
             trade.setStatus(TRADE_STATUS_CLOSED);
             trade.calculatePnL();
             trade = tradeRepository.save(trade);
+
+            sendTradeClosedTelegram(trade);
 
             logger.info("Trade exited: {} | {} | Entry: {} Exit: {} | P&L: {} ({})",
                     tradeId, exitReason, trade.getEntryPrice(), exitPrice,
@@ -1293,12 +1336,8 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
             ledger.setTotalBrokerage(brokerage);
             ledger.setNetPnl(grossPnl - brokerage);
 
-            // Liquidity Sweep trades
-            ledger.setLiquiditySweepTrades((int) todaysTrades.stream()
-                    .filter(t -> SOURCE_LIQUIDITY_SWEEP.equals(t.getSignalSource())).count());
-            ledger.setLiquiditySweepPnl(closedTrades.stream()
-                    .filter(t -> SOURCE_LIQUIDITY_SWEEP.equals(t.getSignalSource()) && t.getNetPnl() != null)
-                    .mapToDouble(SimulatedTrade::getNetPnl).sum());
+            ledger.setLiquiditySweepTrades(0);
+            ledger.setLiquiditySweepPnl(0.0);
 
             // By direction
             ledger.setBuyTrades((int) todaysTrades.stream()
@@ -1387,7 +1426,9 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
     @Override
     public Map<String, Object> getTradingConfig() {
         Map<String, Object> config = new HashMap<>();
-        config.put("autoTradingEnabled", autoTradingEnabled.get());
+        config.put("autoTradingEnabled",     autoTradingEnabled.get());
+        config.put("enableIobStrategy",      enableIobStrategy.get());
+        config.put("enableZeroHeroStrategy", enableZeroHeroStrategy.get());
         config.put("numLots", numLots);
         config.put("quantity", quantity);
         config.put("targetPercent", targetPercent);
@@ -1453,6 +1494,14 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
         if (config.containsKey("autoTradingEnabled")) {
             autoTradingEnabled.set(Boolean.TRUE.equals(config.get("autoTradingEnabled")));
             logger.info("Config updated: autoTradingEnabled={}", autoTradingEnabled.get());
+        }
+        if (config.containsKey("enableIobStrategy")) {
+            enableIobStrategy.set(Boolean.TRUE.equals(config.get("enableIobStrategy")));
+            logger.info("Config updated: enableIobStrategy={}", enableIobStrategy.get());
+        }
+        if (config.containsKey("enableZeroHeroStrategy")) {
+            enableZeroHeroStrategy.set(Boolean.TRUE.equals(config.get("enableZeroHeroStrategy")));
+            logger.info("Config updated: enableZeroHeroStrategy={}", enableZeroHeroStrategy.get());
         }
 
         // Allow updating trailing config at runtime via trading config API
@@ -1577,6 +1626,115 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
 
     private LocalDateTime getEndOfToday() {
         return LocalDate.now(IST).plusDays(1).atStartOfDay();
+    }
+
+    // ── Telegram helpers ──────────────────────────────────────────────────────
+
+    private void sendZeroHeroTradeAlert(SimulatedTrade trade, Map<String, Object> signal) {
+        if (telegramNotificationService == null) return;
+        try {
+            boolean isCE     = "CE".equals(trade.getOptionType());
+            String emoji     = isCE ? "🟢" : "🔴";
+            Integer strike   = trade.getStrikePrice() != null ? trade.getStrikePrice().intValue() : null;
+            Object score     = signal.get("momentumScore");
+            Object ema9Obj   = signal.get("ema9");
+            Object ema21Obj  = signal.get("ema21");
+            Object rsiObj    = signal.get("rsi");
+            Object confObj   = signal.get("confidence");
+
+            StringBuilder msg = new StringBuilder();
+            msg.append(String.format("%s *ZERO HERO TRADE — %s %s*\n", emoji, trade.getSignalType(), trade.getOptionType()));
+            msg.append(String.format("🎯 Strike: *%s*  OTM\n", strike != null ? strike : "?"));
+            msg.append(String.format("💰 Premium: *₹%.2f*\n", trade.getEntryPrice() != null ? trade.getEntryPrice() : 0.0));
+            msg.append(String.format("🎯 Target: ₹%.2f\n", trade.getTargetPrice() != null ? trade.getTargetPrice() : 0.0));
+            msg.append(String.format("🛡️ Stop Loss: ₹%.2f\n", trade.getStopLossPrice() != null ? trade.getStopLossPrice() : 0.0));
+            msg.append(String.format("📦 Qty: %d lots × %d = %d\n",
+                    trade.getNumLots() != null ? trade.getNumLots() : 0,
+                    trade.getLotSize() != null ? trade.getLotSize() : 65,
+                    trade.getQuantity() != null ? trade.getQuantity() : 0));
+            msg.append(String.format("📈 NIFTY @ ₹%.2f\n", trade.getUnderlyingPriceAtEntry() != null ? trade.getUnderlyingPriceAtEntry() : 0.0));
+            msg.append("\n📊 *Momentum*\n");
+            msg.append(String.format("• Score: *%s/3*\n", score != null ? score : "?"));
+            if (ema9Obj instanceof Number && ema21Obj instanceof Number) {
+                double e9 = ((Number) ema9Obj).doubleValue(), e21 = ((Number) ema21Obj).doubleValue();
+                msg.append(String.format("• EMA9: %.2f  EMA21: %.2f  %s\n", e9, e21, e9 > e21 ? "↑ Bull" : "↓ Bear"));
+            }
+            if (rsiObj instanceof Number) {
+                double rsi = ((Number) rsiObj).doubleValue();
+                msg.append(String.format("• RSI: %.1f  %s\n", rsi, rsi > 55 ? "↑ Bull" : rsi < 45 ? "↓ Bear" : "Neutral"));
+            }
+            if (confObj instanceof Number) {
+                msg.append(String.format("💪 Confidence: *%.0f%%*\n", ((Number) confObj).doubleValue()));
+            }
+            msg.append("⚡ Expiry day — ZeroHero window active");
+
+            Map<String, Object> tradeData = new HashMap<>();
+            tradeData.put("tradeId", trade.getTradeId());
+            tradeData.put("source", SOURCE_ZERO_HERO);
+            tradeData.put("strike", strike);
+            tradeData.put("premium", trade.getEntryPrice());
+
+            telegramNotificationService.sendTradeAlert("⚡ ZERO HERO TRADE PLACED", msg.toString(), tradeData);
+        } catch (Exception e) {
+            logger.warn("ZeroHero: Telegram trade alert failed: {}", e.getMessage());
+        }
+    }
+
+    private void sendTradeOpenedTelegram(SimulatedTrade trade) {
+        if (telegramNotificationService == null) return;
+        try {
+            boolean isCE = "CE".equals(trade.getOptionType());
+            String emoji = isCE ? "🟢" : "🔴";
+            StringBuilder msg = new StringBuilder();
+            msg.append(String.format("%s *SIM TRADE OPENED*\n", emoji));
+            msg.append(String.format("📌 Source: *%s*\n", trade.getSignalSource()));
+            msg.append(String.format("🎯 Symbol: *%s*  [%s %s]\n",
+                    trade.getOptionSymbol() != null ? trade.getOptionSymbol() : "—",
+                    trade.getOptionType(), trade.getSignalType()));
+            msg.append(String.format("💰 Entry: *₹%.2f*\n", trade.getEntryPrice() != null ? trade.getEntryPrice() : 0.0));
+            msg.append(String.format("🎯 Target: ₹%.2f  🛡️ SL: ₹%.2f\n",
+                    trade.getTargetPrice() != null ? trade.getTargetPrice() : 0.0,
+                    trade.getStopLossPrice() != null ? trade.getStopLossPrice() : 0.0));
+            msg.append(String.format("📈 NIFTY @ ₹%.2f",
+                    trade.getUnderlyingPriceAtEntry() != null ? trade.getUnderlyingPriceAtEntry() : 0.0));
+
+            Map<String, Object> tradeData = new HashMap<>();
+            tradeData.put("tradeId", trade.getTradeId());
+            tradeData.put("source", trade.getSignalSource());
+            tradeData.put("entryPrice", trade.getEntryPrice());
+
+            telegramNotificationService.sendTradeAlert("📥 SIM TRADE OPENED", msg.toString(), tradeData);
+        } catch (Exception e) {
+            logger.warn("SimTrade: Telegram open alert failed: {}", e.getMessage());
+        }
+    }
+
+    private void sendTradeClosedTelegram(SimulatedTrade trade) {
+        if (telegramNotificationService == null) return;
+        try {
+            double pnl = trade.getNetPnl() != null ? trade.getNetPnl() : 0.0;
+            String emoji  = pnl >= 0 ? "✅" : "❌";
+            String pnlStr = (pnl >= 0 ? "+" : "") + String.format("₹%.0f", pnl);
+            StringBuilder msg = new StringBuilder();
+            msg.append(String.format("%s *SIM TRADE CLOSED*  %s\n", emoji, pnlStr));
+            msg.append(String.format("📌 *%s* %s\n", trade.getSignalSource(), trade.getOptionSymbol() != null ? trade.getOptionSymbol() : ""));
+            msg.append(String.format("💰 Entry: ₹%.2f → Exit: ₹%.2f\n",
+                    trade.getEntryPrice() != null ? trade.getEntryPrice() : 0.0,
+                    trade.getExitPrice() != null ? trade.getExitPrice() : 0.0));
+            msg.append(String.format("🚪 Reason: *%s*\n", trade.getExitReason()));
+            msg.append(String.format("💵 Net P&L: *%s*", pnlStr));
+
+            Map<String, Object> tradeData = new HashMap<>();
+            tradeData.put("tradeId",    trade.getTradeId());
+            tradeData.put("exitReason", trade.getExitReason());
+            tradeData.put("netPnl",     pnl);
+
+            telegramNotificationService.sendTradeAlert(
+                    pnl >= 0 ? "✅ SIM PROFIT" : "❌ SIM LOSS",
+                    msg.toString(), tradeData);
+        } catch (Exception e) {
+            logger.warn("SimTrade: Telegram close alert failed: {}", e.getMessage());
+        }
     }
 
     private String generateTradeId() {
@@ -1722,7 +1880,7 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
         result.put("endDate", endDate.toString());
 
         // Get all signal sources
-        List<String> signalSources = List.of(SOURCE_IOB_SIGNAL, SOURCE_LIQUIDITY_SWEEP, SOURCE_ZERO_HERO, EXIT_MANUAL);
+        List<String> signalSources = List.of(SOURCE_IOB_SIGNAL, SOURCE_ZERO_HERO, EXIT_MANUAL);
         List<Map<String, Object>> sourceStats = new ArrayList<>();
 
         for (String source : signalSources) {
@@ -1786,7 +1944,7 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
         LocalDateTime monthStart = LocalDate.now().withDayOfMonth(1).atStartOfDay();
         LocalDateTime monthEnd = LocalDateTime.now().plusDays(1).toLocalDate().atStartOfDay();
 
-        for (String source : List.of(SOURCE_IOB_SIGNAL, SOURCE_LIQUIDITY_SWEEP, SOURCE_ZERO_HERO)) {
+        for (String source : List.of(SOURCE_IOB_SIGNAL, SOURCE_ZERO_HERO)) {
             Map<String, Object> breakdown = calculateSourceStats(source, monthStart, monthEnd);
             sourceBreakdown.add(breakdown);
         }
@@ -1822,7 +1980,6 @@ public class SimulatedTradingServiceImpl implements SimulatedTradingService {
         switch (source) {
             case SOURCE_IOB_SIGNAL: return "IOB";
             case SOURCE_TRADE_SETUP: return "Trade Setup";
-            case SOURCE_LIQUIDITY_SWEEP: return "Liquidity Sweep";
             case SOURCE_ZERO_HERO: return "Zero Hero";
             case EXIT_MANUAL: return "Manual";
             default: return source;

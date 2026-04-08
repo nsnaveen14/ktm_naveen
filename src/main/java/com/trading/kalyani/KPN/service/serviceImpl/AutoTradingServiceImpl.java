@@ -1,5 +1,6 @@
 package com.trading.kalyani.KPN.service.serviceImpl;
 
+import com.trading.kalyani.KPN.config.KiteConnectConfig;
 import com.trading.kalyani.KPN.entity.*;
 import com.trading.kalyani.KPN.repository.AutoTradeOrderRepository;
 import com.trading.kalyani.KPN.repository.AutoTradingConfigRepository;
@@ -8,15 +9,25 @@ import com.trading.kalyani.KPN.service.AutoTradingService;
 import com.trading.kalyani.KPN.service.PerformanceTrackingService;
 import com.trading.kalyani.KPN.service.RiskManagementService;
 import com.trading.kalyani.KPN.service.TelegramNotificationService;
+import com.zerodhatech.kiteconnect.KiteConnect;
+import com.zerodhatech.kiteconnect.kitehttp.exceptions.KiteException;
+import com.zerodhatech.kiteconnect.utils.Constants;
+import com.zerodhatech.models.Order;
+import com.zerodhatech.models.OrderParams;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
@@ -41,6 +52,9 @@ public class AutoTradingServiceImpl implements AutoTradingService {
     @Autowired
     private InternalOrderBlockRepository iobRepository;
 
+    @Autowired
+    private KiteConnectConfig kiteConnectConfig;
+
     @Autowired(required = false)
     private PerformanceTrackingService performanceService;
 
@@ -54,9 +68,26 @@ public class AutoTradingServiceImpl implements AutoTradingService {
     private final Map<String, Map<String, Object>> openPositions = new ConcurrentHashMap<>();
     private final List<Map<String, Object>> activityLog = Collections.synchronizedList(new LinkedList<>());
 
+    // Cached default config — refreshed on every write; avoids a DB hit on every
+    // checkEntryConditions call which can fire multiple times per minute during zone touches.
+    private volatile AutoTradingConfig cachedConfig = null;
+
     // Default values
     private static final String DEFAULT_CONFIG_NAME = "DEFAULT";
     private static final int MAX_ACTIVITY_LOG_SIZE = 1000;
+
+    // Accepts both "9:20" and "09:20" — H allows single-digit hours
+    private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("H:mm");
+    private static final ZoneId IST_ZONE_ID = ZoneId.of("Asia/Kolkata");
+
+    // Cache today's completed trade count — refreshed once per minute to avoid a DB
+    // hit on every checkEntryConditions call (fires multiple times per minute during zone touches).
+    private volatile int cachedTodaysTrades = 0;
+    private volatile long cachedTodaysTradesAt = 0L;
+    private static final long TRADES_COUNT_CACHE_TTL_MS = 60_000;
+
+    @Value("${autotrade.default.max-daily-loss:10000.0}")
+    private double defaultMaxDailyLoss;
 
     // ==================== Configuration Management ====================
 
@@ -65,6 +96,7 @@ public class AutoTradingServiceImpl implements AutoTradingService {
         AutoTradingConfig config = getOrCreateDefaultConfig();
         config.setAutoTradingEnabled(enabled);
         configRepository.save(config);
+        invalidateConfigCache();
 
         logActivity("CONFIG", enabled ? "Auto trading ENABLED" : "Auto trading DISABLED", null);
         logger.info("Auto trading {}", enabled ? "enabled" : "disabled");
@@ -138,8 +170,24 @@ public class AutoTradingServiceImpl implements AutoTradingService {
         if (configMap.containsKey("enabledInstruments")) {
             config.setEnabledInstruments((String) configMap.get("enabledInstruments"));
         }
+        if (configMap.containsKey("tradeStartTime")) {
+            String value = (String) configMap.get("tradeStartTime");
+            parseTime("tradeStartTime", value); // validate before saving
+            config.setTradeStartTime(value.trim());
+        }
+        if (configMap.containsKey("tradeEndTime")) {
+            String value = (String) configMap.get("tradeEndTime");
+            parseTime("tradeEndTime", value);
+            config.setTradeEndTime(value.trim());
+        }
+        if (configMap.containsKey("marketCloseTime")) {
+            String value = (String) configMap.get("marketCloseTime");
+            parseTime("marketCloseTime", value);
+            config.setMarketCloseTime(value.trim());
+        }
 
         configRepository.save(config);
+        invalidateConfigCache();
         logActivity("CONFIG", "Configuration updated", configMap);
     }
 
@@ -150,28 +198,79 @@ public class AutoTradingServiceImpl implements AutoTradingService {
                 .map(String::valueOf)
                 .collect(Collectors.joining(",")));
         configRepository.save(config);
+        invalidateConfigCache();
     }
 
     @Override
     public List<Long> getAutoTradingInstruments() {
         AutoTradingConfig config = configRepository.getDefaultConfig();
-        if (config == null || config.getEnabledInstruments() == null) {
+        String raw = config != null ? config.getEnabledInstruments() : null;
+
+        if (raw == null || raw.isBlank()) {
             return List.of(NIFTY_INSTRUMENT_TOKEN);
         }
-        return Arrays.stream(config.getEnabledInstruments().split(","))
+
+        List<Long> tokens = Arrays.stream(raw.split(","))
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
-                .map(Long::parseLong)
+                .flatMap(s -> {
+                    try {
+                        return java.util.stream.Stream.of(Long.parseLong(s));
+                    } catch (NumberFormatException e) {
+                        logger.warn("Skipping invalid instrument token '{}' in enabledInstruments", s);
+                        return java.util.stream.Stream.empty();
+                    }
+                })
                 .toList();
+
+        return tokens.isEmpty() ? List.of(NIFTY_INSTRUMENT_TOKEN) : tokens;
     }
 
     private AutoTradingConfig getOrCreateDefaultConfig() {
+        if (cachedConfig != null) return cachedConfig;
         AutoTradingConfig config = configRepository.getDefaultConfig();
         if (config == null) {
             config = createDefaultConfig();
             configRepository.save(config);
         }
+        cachedConfig = config;
         return config;
+    }
+
+    /** Invalidates the in-memory config cache — call after any config write. */
+    private void invalidateConfigCache() {
+        cachedConfig = null;
+    }
+
+    /**
+     * Returns today's completed entry count, cached for TRADES_COUNT_CACHE_TTL_MS.
+     * Avoids a DB hit on every checkEntryConditions call during zone touches.
+     */
+    private int getCachedTodaysTrades() {
+        long now = System.currentTimeMillis();
+        if (now - cachedTodaysTradesAt > TRADES_COUNT_CACHE_TTL_MS) {
+            cachedTodaysTrades = orderRepository.countTodaysCompletedEntries(
+                    LocalDate.now(IST_ZONE_ID).atStartOfDay());
+            cachedTodaysTradesAt = now;
+        }
+        return cachedTodaysTrades;
+    }
+
+    /** Call after a trade is placed to force an immediate refresh of the count. */
+    private void invalidateTodaysTradesCache() {
+        cachedTodaysTradesAt = 0L;
+    }
+
+    private LocalTime parseTime(String fieldName, String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(fieldName + " must not be blank");
+        }
+        try {
+            return LocalTime.parse(value.trim(), TIME_FORMATTER);
+        } catch (DateTimeParseException e) {
+            throw new IllegalArgumentException(
+                    fieldName + " must be in HH:mm format (e.g. 09:20), got: '" + value + "'");
+        }
     }
 
     private AutoTradingConfig createDefaultConfig() {
@@ -179,7 +278,7 @@ public class AutoTradingServiceImpl implements AutoTradingService {
                 .configName(DEFAULT_CONFIG_NAME)
                 .autoTradingEnabled(false)
                 .paperTradingMode(true) // Start with paper trading
-                .entryType("ZONE_TOUCH")
+                .entryType(ENTRY_TYPE_ZONE_TOUCH)
                 .minConfidence(65.0)
                 .requireFvg(false)
                 .requireTrendAlignment(true)
@@ -188,23 +287,23 @@ public class AutoTradingServiceImpl implements AutoTradingService {
                 .maxLotsPerTrade(1)
                 .maxOpenPositions(2)
                 .maxDailyTrades(5)
-                .maxDailyLoss(10000.0)
+                .maxDailyLoss(defaultMaxDailyLoss)
                 .useDynamicSL(true)
                 .slAtrMultiplier(1.5)
                 .enableTrailingSL(true)
-                .trailingSLTrigger("TARGET_1")
+                .trailingSLTrigger(TRAILING_SL_TRIGGER_TARGET_1)
                 .trailingSLDistancePoints(20.0)
                 .bookPartialProfits(true)
                 .partialProfitPercent(50)
-                .partialProfitAt("TARGET_1")
-                .defaultExitTarget("TARGET_2")
+                .partialProfitAt(TRADE_TARGET_1)
+                .defaultExitTarget(TRADE_TARGET_2)
                 .exitAtMarketClose(true)
                 .marketCloseTime("15:20")
                 .tradeStartTime("09:20")
                 .tradeEndTime("15:00")
                 .avoidFirstCandle(true)
-                .enabledInstruments(NIFTY_INSTRUMENT_TOKEN + ",")
-                .defaultProductType("MIS")
+                .enabledInstruments(String.valueOf(NIFTY_INSTRUMENT_TOKEN))
+                .defaultProductType(PRODUCT_TYPE_MIS)
                 .useBracketOrders(false)
                 .useCoverOrders(false)
                 .notifyOnEntry(true)
@@ -218,38 +317,42 @@ public class AutoTradingServiceImpl implements AutoTradingService {
 
     @Override
     public Map<String, Object> checkEntryConditions(Long iobId, Double currentPrice) {
-        Map<String, Object> result = new HashMap<>();
-        result.put("iobId", iobId);
-        result.put("currentPrice", currentPrice);
-
         Optional<InternalOrderBlock> iobOpt = iobRepository.findById(iobId);
         if (iobOpt.isEmpty()) {
-            result.put("valid", false);
-            result.put("reason", "IOB not found");
-            return result;
+            return Map.of("iobId", iobId, "valid", false, "reason", "IOB not found");
         }
+        return checkEntryConditions(iobOpt.get(), getOrCreateDefaultConfig(), currentPrice);
+    }
 
-        InternalOrderBlock iob = iobOpt.get();
-        AutoTradingConfig config = getOrCreateDefaultConfig();
+    private Map<String, Object> checkEntryConditions(InternalOrderBlock iob, AutoTradingConfig config, Double currentPrice) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("iobId", iob.getId());
+        result.put("currentPrice", currentPrice);
 
         List<String> failedConditions = new ArrayList<>();
         List<String> passedConditions = new ArrayList<>();
 
-        // Check if IOB is still fresh
+        // Short-circuit on hard-invalid conditions — no point running DB queries
+        // or time checks if the IOB itself is not tradeable.
         if (!"FRESH".equals(iob.getStatus())) {
-            failedConditions.add("IOB is not FRESH: " + iob.getStatus());
-        } else {
-            passedConditions.add("IOB is FRESH");
+            result.put("passedConditions", passedConditions);
+            result.put("failedConditions", List.of("IOB is not FRESH: " + iob.getStatus()));
+            result.put("valid", false);
+            result.put("zoneTouched", false);
+            return result;
         }
+        passedConditions.add("IOB is FRESH");
 
-        // Check confidence threshold
-        if (iob.getSignalConfidence() != null &&
-                iob.getSignalConfidence() >= config.getMinConfidence()) {
-            passedConditions.add("Confidence meets threshold: " +
-                    String.format("%.1f%% >= %.1f%%", iob.getSignalConfidence(), config.getMinConfidence()));
+        // Check confidence threshold — prefer enhancedConfidence if set, fall back to signalConfidence
+        Double iobConfidence = iob.getEnhancedConfidence() != null
+                ? iob.getEnhancedConfidence() : iob.getSignalConfidence();
+        double minConf = config.getMinConfidence() != null ? config.getMinConfidence() : 65.0;
+        if (iobConfidence != null && iobConfidence >= minConf) {
+            passedConditions.add(String.format("Confidence meets threshold: %.1f%% >= %.1f%%",
+                    iobConfidence, minConf));
         } else {
-            failedConditions.add("Confidence too low: " +
-                    (iob.getSignalConfidence() != null ? String.format("%.1f%%", iob.getSignalConfidence()) : "N/A"));
+            failedConditions.add(String.format("Confidence too low: %s < %.1f%%",
+                    iobConfidence != null ? String.format("%.1f%%", iobConfidence) : "null", minConf));
         }
 
         // Check FVG requirement
@@ -278,20 +381,25 @@ public class AutoTradingServiceImpl implements AutoTradingService {
             failedConditions.add("Price not in zone yet");
         }
 
-        // Check trading hours
-        LocalTime now = LocalTime.now();
-        LocalTime startTime = LocalTime.parse(config.getTradeStartTime());
-        LocalTime endTime = LocalTime.parse(config.getTradeEndTime());
-
-        if (now.isAfter(startTime) && now.isBefore(endTime)) {
-            passedConditions.add("Within trading hours");
-        } else {
-            failedConditions.add("Outside trading hours");
+        // Check trading hours — must use IST, not system timezone
+        LocalTime nowIST = LocalTime.now(IST_ZONE_ID);
+        try {
+            LocalTime startTime = parseTime("tradeStartTime", config.getTradeStartTime());
+            LocalTime endTime   = parseTime("tradeEndTime",   config.getTradeEndTime());
+            if (nowIST.isAfter(startTime) && nowIST.isBefore(endTime)) {
+                passedConditions.add("Within trading hours");
+            } else {
+                failedConditions.add(String.format("Outside trading hours (%s, window %s–%s)",
+                        nowIST, startTime, endTime));
+            }
+        } catch (IllegalArgumentException e) {
+            // Misconfigured time string — fail safe rather than throwing and blocking all trades
+            failedConditions.add("Trading hours config invalid: " + e.getMessage());
+            logger.warn("checkEntryConditions: {}", e.getMessage());
         }
 
-        // Check daily trade limit
-        int todaysTrades = orderRepository.countTodaysCompletedEntries(
-                LocalDate.now().atStartOfDay());
+        // Check daily trade limit — cached for TRADES_COUNT_CACHE_TTL_MS to avoid per-tick DB hits
+        int todaysTrades = getCachedTodaysTrades();
         if (todaysTrades < config.getMaxDailyTrades()) {
             passedConditions.add("Daily trade limit not exceeded: " +
                     todaysTrades + "/" + config.getMaxDailyTrades());
@@ -315,12 +423,18 @@ public class AutoTradingServiceImpl implements AutoTradingService {
         return result;
     }
 
+    // 0.1% buffer — price approaching zone within this distance counts as a touch
+    private static final double ZONE_APPROACH_BUFFER_PERCENT = 0.1;
+
     @Override
     public boolean isZoneTouched(InternalOrderBlock iob, Double currentPrice) {
         if (iob == null || currentPrice == null ||
                 iob.getZoneHigh() == null || iob.getZoneLow() == null) {
             return false;
         }
+
+        // Price must be strictly inside the zone — no buffer allowed.
+        // Entry is only valid when price actually re-enters the IOB zone.
         return currentPrice >= iob.getZoneLow() && currentPrice <= iob.getZoneHigh();
     }
 
@@ -333,25 +447,50 @@ public class AutoTradingServiceImpl implements AutoTradingService {
 
     @Override
     public List<InternalOrderBlock> getIOBsReadyForEntry(Long instrumentToken, Double currentPrice) {
+        return getIOBsReadyForEntry(instrumentToken, currentPrice, getOrCreateDefaultConfig());
+    }
+
+    private List<InternalOrderBlock> getIOBsReadyForEntry(Long instrumentToken, Double currentPrice, AutoTradingConfig config) {
         List<InternalOrderBlock> freshIOBs = iobRepository.findFreshIOBs(instrumentToken);
-        AutoTradingConfig config = getOrCreateDefaultConfig();
+        if (freshIOBs.isEmpty()) {
+            return List.of();
+        }
+
+        double minConfidence = config.getMinConfidence() != null ? config.getMinConfidence() : 65.0;
+
+        // Pre-fetch all IOB IDs that already have orders in one query (avoids N+1)
+        List<Long> iobIds = freshIOBs.stream()
+                .map(InternalOrderBlock::getId)
+                .filter(id -> id != null)
+                .toList();
+        Set<Long> iobIdsWithOrders = orderRepository.findExistingOrderIobIds(iobIds);
 
         return freshIOBs.stream()
                 .filter(iob -> {
-                    // Check confidence
-                    if (iob.getSignalConfidence() == null ||
-                            iob.getSignalConfidence() < config.getMinConfidence()) {
+                    // Prefer enhancedConfidence if set, same as IOBAutoTradeServiceImpl
+                    Double conf = iob.getEnhancedConfidence() != null
+                            ? iob.getEnhancedConfidence() : iob.getSignalConfidence();
+                    if (conf == null || conf < minConfidence) {
+                        logger.warn("AUTO-TRADE SKIP IOB#{} {}: confidence {}% < min {}%",
+                                iob.getId(), iob.getObType(),
+                                conf != null ? String.format("%.1f", conf) : "null",
+                                String.format("%.1f", minConfidence));
                         return false;
                     }
-
-                    // Check zone touch
                     if (!isZoneTouched(iob, currentPrice)) {
+                        logger.info("AUTO-TRADE SKIP IOB#{} {}: price {} not in zone [{} – {}]",
+                                iob.getId(), iob.getObType(),
+                                String.format("%.2f", currentPrice),
+                                iob.getZoneLow() != null ? String.format("%.2f", iob.getZoneLow()) : "null",
+                                iob.getZoneHigh() != null ? String.format("%.2f", iob.getZoneHigh()) : "null");
                         return false;
                     }
-
-                    // Check if already has a pending order
-                    Optional<AutoTradeOrder> existingOrder = orderRepository.findByIobId(iob.getId());
-                    return existingOrder.isEmpty();
+                    if (iob.getId() == null || iobIdsWithOrders.contains(iob.getId())) {
+                        logger.warn("AUTO-TRADE SKIP IOB#{} {}: AutoTradeOrder already exists for this IOB",
+                                iob.getId(), iob.getObType());
+                        return false;
+                    }
+                    return true;
                 })
                 .toList();
     }
@@ -359,7 +498,6 @@ public class AutoTradingServiceImpl implements AutoTradingService {
     // ==================== Order Management ====================
 
     @Override
-    @Transactional
     public Map<String, Object> placeIOBOrder(Long iobId, Double entryPrice, Integer quantity) {
         Map<String, Object> result = new HashMap<>();
 
@@ -373,23 +511,32 @@ public class AutoTradingServiceImpl implements AutoTradingService {
         InternalOrderBlock iob = iobOpt.get();
         AutoTradingConfig config = getOrCreateDefaultConfig();
 
-        // Check entry conditions
-        Map<String, Object> conditions = checkEntryConditions(iobId, entryPrice);
+        // Pass already-fetched iob and config to avoid re-fetching inside checkEntryConditions
+        Map<String, Object> conditions = checkEntryConditions(iob, config, entryPrice);
         if (!Boolean.TRUE.equals(conditions.get("valid"))) {
+            logger.warn("AUTO-TRADE BLOCKED IOB#{} {}: failed conditions: {}",
+                    iobId, iob.getObType(), conditions.get("failedConditions"));
             result.put("success", false);
             result.put("error", "Entry conditions not met");
             result.put("failedConditions", conditions.get("failedConditions"));
             return result;
         }
 
-        // Determine quantity
-        int qty = quantity != null ? quantity : config.getMaxPositionSize();
+        // Determine quantity — null-safe unboxing
+        int qty = quantity != null ? quantity
+                : (config.getMaxPositionSize() != null ? config.getMaxPositionSize() : 1);
 
         // Use risk management for position sizing if available
         if (riskManagementService != null) {
             Map<String, Object> sizing = riskManagementService.calculatePositionSizeForIOB(iob);
             if (sizing != null && sizing.get("calculatedQuantity") != null) {
-                qty = Math.min(qty, ((Number) sizing.get("calculatedQuantity")).intValue());
+                int riskQty = ((Number) sizing.get("calculatedQuantity")).intValue();
+                if (riskQty <= 0) {
+                    result.put("success", false);
+                    result.put("error", "Position sizing returned 0 — risk per unit exceeds max risk allowed");
+                    return result;
+                }
+                qty = Math.min(qty, riskQty);
             }
         }
 
@@ -405,48 +552,51 @@ public class AutoTradingServiceImpl implements AutoTradingService {
                 .price(entryPrice)
                 .status("PENDING")
                 .orderPurpose("ENTRY")
-                .orderTime(LocalDateTime.now())
+                .orderTime(LocalDateTime.now(IST_ZONE_ID))
                 .build();
+
+        boolean orderSucceeded;
 
         // Check if paper trading mode
         if (Boolean.TRUE.equals(config.getPaperTradingMode())) {
-            // Simulate order execution
             order.setStatus("COMPLETE");
             order.setFilledQuantity(qty);
             order.setAveragePrice(entryPrice);
-            order.setFillTime(LocalDateTime.now());
+            order.setFillTime(LocalDateTime.now(IST_ZONE_ID));
             order.setKiteOrderId("PAPER_" + System.currentTimeMillis());
 
-            // Create trade result
             if (performanceService != null) {
                 TradeResult trade = performanceService.createTradeFromIOB(
                         iob, entryPrice, qty, "SIMULATED", "AUTO_ZONE_TOUCH");
                 order.setTradeResultId(trade.getId());
             }
 
-            // Add to open positions
             addOpenPosition(order, iob);
-
             result.put("mode", "PAPER_TRADING");
+            orderSucceeded = true;
         } else {
-            // Place real order via Kite API
+            // Kite API call happens outside @Transactional to avoid holding DB connection during network I/O
             Map<String, Object> kiteResult = placeKiteOrder(order);
             if (Boolean.TRUE.equals(kiteResult.get("success"))) {
                 order.setKiteOrderId((String) kiteResult.get("orderId"));
                 order.setStatus("PLACED");
+                orderSucceeded = true;
             } else {
                 order.setStatus("REJECTED");
                 order.setErrorMessage((String) kiteResult.get("error"));
+                orderSucceeded = false;
             }
         }
 
-        orderRepository.save(order);
+        // Persist order and conditionally update IOB in one transaction
+        saveOrderAndUpdateIOB(order, iob, orderSucceeded);
 
-        // Mark IOB as traded
-        iob.setStatus("TRADED");
-        iob.setTradeTaken(true);
-        iob.setTradeId(order.getOrderId());
-        iobRepository.save(iob);
+        if (!orderSucceeded) {
+            result.put("success", false);
+            result.put("error", order.getErrorMessage());
+            result.put("order", convertOrderToMap(order));
+            return result;
+        }
 
         // Send notification
         if (Boolean.TRUE.equals(config.getNotifyOnEntry()) && telegramService != null) {
@@ -462,6 +612,17 @@ public class AutoTradingServiceImpl implements AutoTradingService {
         result.put("success", true);
         result.put("order", convertOrderToMap(order));
         return result;
+    }
+
+    @Transactional
+    protected void saveOrderAndUpdateIOB(AutoTradeOrder order, InternalOrderBlock iob, boolean markTraded) {
+        orderRepository.save(order);
+        if (markTraded) {
+            iob.setStatus("TRADED");
+            iob.setTradeTaken(true);
+            iob.setTradeId(order.getOrderId());
+            iobRepository.save(iob);
+        }
     }
 
     @Override
@@ -620,7 +781,7 @@ public class AutoTradingServiceImpl implements AutoTradingService {
         // Close trade result
         Long tradeResultId = (Long) position.get("tradeResultId");
         if (tradeResultId != null && performanceService != null) {
-            performanceService.closeTradeResult(tradeResultId, exitPrice, LocalDateTime.now(), reason);
+            performanceService.closeTradeResult(tradeResultId, exitPrice, LocalDateTime.now(IST_ZONE_ID), reason);
         }
 
         // Create exit order
@@ -637,8 +798,8 @@ public class AutoTradingServiceImpl implements AutoTradingService {
                 .status("COMPLETE")
                 .orderPurpose(reason)
                 .parentOrderId((String) position.get("entryOrderId"))
-                .orderTime(LocalDateTime.now())
-                .fillTime(LocalDateTime.now())
+                .orderTime(LocalDateTime.now(IST_ZONE_ID))
+                .fillTime(LocalDateTime.now(IST_ZONE_ID))
                 .build();
 
         orderRepository.save(exitOrder);
@@ -696,49 +857,52 @@ public class AutoTradingServiceImpl implements AutoTradingService {
     @Override
     public void processAutoTrades(Map<Long, Double> currentPrices) {
         if (!isAutoTradingEnabled()) {
+            logger.debug("AUTO-TRADE: disabled — skipping processAutoTrades");
             return;
         }
 
         AutoTradingConfig config = getOrCreateDefaultConfig();
 
         // Check trading hours
-        LocalTime now = LocalTime.now();
-        LocalTime startTime = LocalTime.parse(config.getTradeStartTime());
-        LocalTime endTime = LocalTime.parse(config.getTradeEndTime());
+        LocalTime now = LocalTime.now(IST_ZONE_ID);
+        LocalTime startTime = parseTime("tradeStartTime", config.getTradeStartTime());
+        LocalTime endTime = parseTime("tradeEndTime", config.getTradeEndTime());
 
         if (now.isBefore(startTime) || now.isAfter(endTime)) {
             return;
         }
 
-        // Check daily limits
+        // Check daily limits — null-safe unboxing
+        int maxDailyTrades = config.getMaxDailyTrades() != null ? config.getMaxDailyTrades() : 5;
         int todaysTrades = orderRepository.countTodaysCompletedEntries(
-                LocalDate.now().atStartOfDay());
-        if (todaysTrades >= config.getMaxDailyTrades()) {
+                LocalDate.now(IST_ZONE_ID).atStartOfDay());
+        if (todaysTrades >= maxDailyTrades) {
             return;
         }
+
+        int maxOpenPositions = config.getMaxOpenPositions() != null ? config.getMaxOpenPositions() : 2;
 
         // Process each enabled instrument
         for (Long token : getAutoTradingInstruments()) {
             Double currentPrice = currentPrices.get(token);
             if (currentPrice == null) continue;
 
-            // Check for IOBs ready for entry
-            List<InternalOrderBlock> readyIOBs = getIOBsReadyForEntry(token, currentPrice);
+            // pass config down to avoid a second getOrCreateDefaultConfig() call inside
+            List<InternalOrderBlock> readyIOBs = getIOBsReadyForEntry(token, currentPrice, config);
 
             for (InternalOrderBlock iob : readyIOBs) {
-                // Check position limit
-                if (openPositions.size() >= config.getMaxOpenPositions()) {
+                if (openPositions.size() >= maxOpenPositions) {
                     break;
                 }
 
-                // Check if already has order
-                if (orderRepository.findByIobId(iob.getId()).isPresent()) {
+                Double entryPrice = iob.getZoneMidpoint();
+                if (entryPrice == null) {
+                    logger.warn("Skipping IOB {} — zoneMidpoint is null", iob.getId());
                     continue;
                 }
 
-                // Place order
                 try {
-                    placeIOBOrder(iob.getId(), iob.getZoneMidpoint(), null);
+                    placeIOBOrder(iob.getId(), entryPrice, null);
                     logger.info("Auto trade placed for IOB {}", iob.getId());
                 } catch (Exception e) {
                     logger.error("Error placing auto trade for IOB {}: {}", iob.getId(), e.getMessage());
@@ -751,7 +915,7 @@ public class AutoTradingServiceImpl implements AutoTradingService {
 
         // Check for market close exit
         if (Boolean.TRUE.equals(config.getExitAtMarketClose())) {
-            LocalTime closeTime = LocalTime.parse(config.getMarketCloseTime());
+            LocalTime closeTime = parseTime("marketCloseTime", config.getMarketCloseTime());
             if (now.isAfter(closeTime)) {
                 closeAllPositions(null);
             }
@@ -863,7 +1027,7 @@ public class AutoTradingServiceImpl implements AutoTradingService {
                     order.setStatus("COMPLETE");
                     order.setFilledQuantity(order.getQuantity());
                     order.setAveragePrice(order.getPrice());
-                    order.setFillTime(LocalDateTime.now());
+                    order.setFillTime(LocalDateTime.now(IST_ZONE_ID));
                     orderRepository.save(order);
 
                     // Add to open positions
@@ -880,7 +1044,7 @@ public class AutoTradingServiceImpl implements AutoTradingService {
     public Map<String, Object> getAutoTradingStats() {
         Map<String, Object> stats = new HashMap<>();
 
-        LocalDateTime todayStart = LocalDate.now().atStartOfDay();
+        LocalDateTime todayStart = LocalDate.now(IST_ZONE_ID).atStartOfDay();
         List<AutoTradeOrder> todaysOrders = orderRepository.findTodaysOrders(todayStart);
 
         stats.put("isEnabled", isAutoTradingEnabled());
@@ -901,7 +1065,7 @@ public class AutoTradingServiceImpl implements AutoTradingService {
 
     @Override
     public List<Map<String, Object>> getTodaysAutoTrades() {
-        LocalDateTime todayStart = LocalDate.now().atStartOfDay();
+        LocalDateTime todayStart = LocalDate.now(IST_ZONE_ID).atStartOfDay();
         return orderRepository.findTodaysOrders(todayStart).stream()
                 .map(this::convertOrderToMap)
                 .toList();
@@ -940,26 +1104,63 @@ public class AutoTradingServiceImpl implements AutoTradingService {
     }
 
     private Map<String, Object> placeKiteOrder(AutoTradeOrder order) {
-        // This would integrate with Kite Connect API
-        // For now, return a placeholder
         Map<String, Object> result = new HashMap<>();
+        try {
+            KiteConnect kite = kiteConnectConfig.kiteConnect();
+            if (kite.getAccessToken() == null) {
+                result.put("success", false);
+                result.put("error", "Kite access token not set — user not logged in");
+                return result;
+            }
 
-        // TODO: Implement actual Kite API integration
-        // KiteConnect kite = kiteService.getKiteConnect();
-        // OrderParams orderParams = new OrderParams();
-        // orderParams.tradingsymbol = order.getTradingSymbol();
-        // orderParams.exchange = order.getExchange();
-        // orderParams.transactionType = order.getTransactionType();
-        // orderParams.quantity = order.getQuantity();
-        // orderParams.price = order.getPrice();
-        // orderParams.orderType = order.getOrderType();
-        // orderParams.product = order.getProductType();
-        // Order response = kite.placeOrder(orderParams, "regular");
-        // result.put("orderId", response.orderId);
+            OrderParams params = new OrderParams();
+            params.tradingsymbol = order.getTradingSymbol();
+            params.exchange      = order.getExchange();
+            params.transactionType = "BUY".equals(order.getTransactionType())
+                    ? Constants.TRANSACTION_TYPE_BUY : Constants.TRANSACTION_TYPE_SELL;
+            params.orderType     = mapOrderType(order.getOrderType());
+            params.product       = mapProductType(order.getProductType());
+            params.quantity      = order.getQuantity();
+            params.price         = order.getPrice() != null ? order.getPrice() : 0.0;
+            params.triggerPrice  = order.getTriggerPrice() != null ? order.getTriggerPrice() : 0.0;
+            params.validity      = Constants.VALIDITY_DAY;
+            params.tag           = "KPN_IOB";
 
-        result.put("success", false);
-        result.put("error", "Kite API integration not implemented yet");
+            Order kiteOrder = kite.placeOrder(params, "regular");
+            logger.info("Kite order placed: orderId={} for {}", kiteOrder.orderId, order.getTradingSymbol());
+
+            result.put("success", true);
+            result.put("orderId", kiteOrder.orderId);
+
+        } catch (KiteException e) {
+            logger.error("Kite API error for {}: [{}] {}", order.getTradingSymbol(), e.code, e.getMessage());
+            result.put("success", false);
+            result.put("error", "Kite error " + e.code + ": " + e.getMessage());
+        } catch (IOException e) {
+            logger.error("Network error placing order for {}: {}", order.getTradingSymbol(), e.getMessage());
+            result.put("success", false);
+            result.put("error", "Network error: " + e.getMessage());
+        }
         return result;
+    }
+
+    private String mapOrderType(String orderType) {
+        if (orderType == null) return Constants.ORDER_TYPE_MARKET;
+        return switch (orderType) {
+            case "LIMIT" -> Constants.ORDER_TYPE_LIMIT;
+            case "SL"    -> Constants.ORDER_TYPE_SL;
+            case "SL-M"  -> Constants.ORDER_TYPE_SLM;
+            default      -> Constants.ORDER_TYPE_MARKET;
+        };
+    }
+
+    private String mapProductType(String productType) {
+        if (productType == null) return Constants.PRODUCT_MIS;
+        return switch (productType) {
+            case "NRML" -> Constants.PRODUCT_NRML;
+            case "CNC"  -> Constants.PRODUCT_CNC;
+            default     -> Constants.PRODUCT_MIS;
+        };
     }
 
     private void sendEntryNotification(InternalOrderBlock iob, AutoTradeOrder order) {
@@ -1013,7 +1214,7 @@ public class AutoTradingServiceImpl implements AutoTradingService {
 
     private void logActivity(String type, String message, Map<String, Object> data) {
         Map<String, Object> entry = new HashMap<>();
-        entry.put("timestamp", LocalDateTime.now());
+        entry.put("timestamp", LocalDateTime.now(IST_ZONE_ID));
         entry.put("type", type);
         entry.put("message", message);
         entry.put("data", data);

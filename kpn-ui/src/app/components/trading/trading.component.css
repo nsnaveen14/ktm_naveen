@@ -478,6 +478,67 @@
   gap: 12px;
 }
 
+.strategy-switches, .strategy-toggles {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.strategy-label {
+  font-size: 13px;
+  color: rgba(255,255,255,0.6);
+  white-space: nowrap;
+}
+
+/* Slide toggle label text — white on dark background */
+::ng-deep .strategy-toggles .mat-slide-toggle-content,
+::ng-deep .strategy-toggles .mdc-label,
+::ng-deep .strategy-toggles label {
+  color: #e0e0e0 !important;
+}
+
+/* MDC-based slide toggle (Angular Material v15+) */
+::ng-deep .strategy-toggles .mat-mdc-slide-toggle .mdc-label {
+  color: #e0e0e0 !important;
+}
+
+/* Also fix any mat-form-field labels in config-edit that appear black */
+::ng-deep .config-edit .mdc-floating-label,
+::ng-deep .config-edit .mat-mdc-floating-label {
+  color: #9e9e9e !important;
+}
+::ng-deep .config-edit .mdc-text-field__input {
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+}
+::ng-deep .config-edit .mdc-text-field--outlined {
+  background: #2a2a2a !important;
+}
+::ng-deep .config-edit .mdc-notched-outline__leading,
+::ng-deep .config-edit .mdc-notched-outline__notch,
+::ng-deep .config-edit .mdc-notched-outline__trailing {
+  border-color: #555 !important;
+}
+
+.chip-on {
+  background-color: #2e7d32 !important;
+  color: #fff !important;
+}
+
+.chip-off {
+  background-color: #424242 !important;
+  color: rgba(255,255,255,0.5) !important;
+}
+
+.chip-on mat-icon, .chip-off mat-icon {
+  font-size: 16px;
+  height: 16px;
+  width: 16px;
+  margin-right: 4px;
+}
+
 /* Ledger */
 .ledger-content {
   padding: 16px;
@@ -891,5 +952,28 @@
 
 ::ng-deep .cdk-overlay-dark-backdrop {
   background: rgba(0, 0, 0, 0.7) !important;
+}
+
+.entry-info-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.entry-underlying {
+  font-size: 0.82rem;
+  color: #e0e0e0;
+  font-weight: 500;
+}
+
+.entry-premium {
+  font-size: 0.82rem;
+  color: #90caf9;
+  font-weight: 600;
+}
+
+.entry-nifty {
+  font-size: 0.72rem;
+  color: #b0bec5;
 }
 

@@ -28,7 +28,10 @@ import {
   TradeSetupPerformance,
   LiveTickData,
   EMAChartData,
-  RollingChartData
+  RollingChartData,
+  OptionBuyingConfig,
+  OptionBuyingStatus,
+  OptionBuyingTrade
 } from '../models/analytics.model';
 
 @Injectable({
@@ -101,18 +104,6 @@ export class DataService {
   private deviationSummaryUrl = this.predictionBaseUrl + "/deviation/summary";
 
 
-  // Liquidity Sweep API endpoints
-  private liquiditySweepBaseUrl = "/api/liquidity-sweep";
-  private liquiditySweepLatestUrl = this.liquiditySweepBaseUrl + "/latest";
-  private liquiditySweepLatestSetupUrl = this.liquiditySweepBaseUrl + "/latest-setup";
-  private liquiditySweepTodayUrl = this.liquiditySweepBaseUrl + "/today";
-  private liquiditySweepAnalyzeUrl = this.liquiditySweepBaseUrl + "/analyze";
-  private liquiditySweepSignalUrl = this.liquiditySweepBaseUrl + "/signal";
-  private liquiditySweepRecommendationUrl = this.liquiditySweepBaseUrl + "/recommendation";
-  private liquiditySweepLevelsUrl = this.liquiditySweepBaseUrl + "/levels";
-  private liquiditySweepWhaleActivityUrl = this.liquiditySweepBaseUrl + "/whale-activity";
-  private liquiditySweepDashboardUrl = this.liquiditySweepBaseUrl + "/dashboard";
-  private liquiditySweepConfigUrl = this.liquiditySweepBaseUrl + "/config";
 
   // Liquidity Zone Analysis API endpoints
   private liquidityZoneBaseUrl = "/api/liquidity";
@@ -144,6 +135,9 @@ export class DataService {
   private iobStatisticsUrl = this.iobBaseUrl + "/statistics";
   private iobCheckMitigationUrl = this.iobBaseUrl + "/check-mitigation";
   private iobMitigateUrl = this.iobBaseUrl + "/mitigate";
+
+  // Option Buying API endpoints
+  private optionBuyingBaseUrl = "/api/option-buying";
 
   // IOB Auto Trade API endpoints
   private iobAutoTradeBaseUrl = "/api/iob/auto-trade";
@@ -605,78 +599,6 @@ export class DataService {
   }
 
 
-  // ============= Liquidity Sweep API Methods =============
-
-  /**
-   * Get latest liquidity sweep analysis
-   */
-  getLatestLiquiditySweep(appJobConfigNum: number) {
-    return this.httpClient.get<any>(this.baseUrl + this.liquiditySweepLatestUrl + `/${appJobConfigNum}`);
-  }
-
-  /**
-   * Get latest valid trade setup from liquidity sweep
-   */
-  getLatestLiquiditySweepSetup(appJobConfigNum: number) {
-    return this.httpClient.get<any>(this.baseUrl + this.liquiditySweepLatestSetupUrl + `/${appJobConfigNum}`);
-  }
-
-  /**
-   * Get today's liquidity sweep analyses
-   */
-  getTodayLiquiditySweepAnalyses(appJobConfigNum: number) {
-    return this.httpClient.get<any[]>(this.baseUrl + this.liquiditySweepTodayUrl + `/${appJobConfigNum}`);
-  }
-
-  /**
-   * Run a fresh liquidity sweep analysis
-   */
-  runLiquiditySweepAnalysis(appJobConfigNum: number) {
-    return this.httpClient.post<any>(this.baseUrl + this.liquiditySweepAnalyzeUrl + `/${appJobConfigNum}`, {});
-  }
-
-  /**
-   * Check for liquidity sweep signal
-   */
-  checkLiquiditySweepSignal(appJobConfigNum: number) {
-    return this.httpClient.get<any>(this.baseUrl + this.liquiditySweepSignalUrl + `/${appJobConfigNum}`);
-  }
-
-  /**
-   * Get trade recommendation based on liquidity sweep
-   */
-  getLiquiditySweepRecommendation(appJobConfigNum: number) {
-    return this.httpClient.get<any>(this.baseUrl + this.liquiditySweepRecommendationUrl + `/${appJobConfigNum}`);
-  }
-
-  /**
-   * Get liquidity levels (BSL/SSL) for charting
-   */
-  getLiquidityLevels(appJobConfigNum: number) {
-    return this.httpClient.get<any>(this.baseUrl + this.liquiditySweepLevelsUrl + `/${appJobConfigNum}`);
-  }
-
-  /**
-   * Get whale activity indicators
-   */
-  getWhaleActivity(appJobConfigNum: number) {
-    return this.httpClient.get<any>(this.baseUrl + this.liquiditySweepWhaleActivityUrl + `/${appJobConfigNum}`);
-  }
-
-  /**
-   * Get comprehensive liquidity sweep dashboard data
-   */
-  getLiquiditySweepDashboard(appJobConfigNum: number) {
-    return this.httpClient.get<any>(this.baseUrl + this.liquiditySweepDashboardUrl + `/${appJobConfigNum}`);
-  }
-
-  /**
-   * Get liquidity sweep configuration
-   */
-  getLiquiditySweepConfig() {
-    return this.httpClient.get<any>(this.baseUrl + this.liquiditySweepConfigUrl);
-  }
-
   // ==================== Liquidity Zone Analysis Methods ====================
 
   /**
@@ -990,12 +912,17 @@ export class DataService {
   /**
    * Run IOB backtest
    */
-  runIOBBacktest(instrumentToken: number, startDate: string, endDate: string, timeframe: string = '5min'): Observable<any> {
-    const params = new HttpParams()
+  runIOBBacktest(instrumentToken: number, startDate: string, endDate: string, timeframe: string = '5min',
+                 minConfidence?: number, requireFvg: boolean = false): Observable<any> {
+    let params = new HttpParams()
       .set('instrumentToken', instrumentToken.toString())
       .set('startDate', startDate)
       .set('endDate', endDate)
-      .set('timeframe', timeframe);
+      .set('timeframe', timeframe)
+      .set('requireFvg', requireFvg.toString());
+    if (minConfidence !== undefined) {
+      params = params.set('minConfidence', minConfidence.toString());
+    }
     return this.httpClient.post<any>(this.baseUrl + this.iobAutoTradeBacktestUrl, {}, { params });
   }
 
@@ -1032,6 +959,36 @@ export class DataService {
    */
   getHTFAlignedIOBs(instrumentToken: number): Observable<any> {
     return this.httpClient.get<any>(this.baseUrl + this.iobAutoTradeHTFAlignedUrl + '/' + instrumentToken);
+  }
+
+  // ── Option Buying ──────────────────────────────────────────────────────────
+
+  getOptionBuyingConfig(): Observable<OptionBuyingConfig> {
+    return this.httpClient.get<OptionBuyingConfig>(this.baseUrl + this.optionBuyingBaseUrl + '/config');
+  }
+
+  updateOptionBuyingConfig(config: OptionBuyingConfig): Observable<OptionBuyingConfig> {
+    return this.httpClient.post<OptionBuyingConfig>(this.baseUrl + this.optionBuyingBaseUrl + '/config', config);
+  }
+
+  enableOptionBuying(): Observable<OptionBuyingStatus> {
+    return this.httpClient.post<OptionBuyingStatus>(this.baseUrl + this.optionBuyingBaseUrl + '/enable', {});
+  }
+
+  disableOptionBuying(): Observable<OptionBuyingStatus> {
+    return this.httpClient.post<OptionBuyingStatus>(this.baseUrl + this.optionBuyingBaseUrl + '/disable', {});
+  }
+
+  getOptionBuyingStatus(): Observable<OptionBuyingStatus> {
+    return this.httpClient.get<OptionBuyingStatus>(this.baseUrl + this.optionBuyingBaseUrl + '/status');
+  }
+
+  getOptionBuyingOpenTrades(): Observable<OptionBuyingTrade[]> {
+    return this.httpClient.get<OptionBuyingTrade[]>(this.baseUrl + this.optionBuyingBaseUrl + '/open-trades');
+  }
+
+  getOptionBuyingTodayTrades(): Observable<OptionBuyingTrade[]> {
+    return this.httpClient.get<OptionBuyingTrade[]>(this.baseUrl + this.optionBuyingBaseUrl + '/today-trades');
   }
 
 }

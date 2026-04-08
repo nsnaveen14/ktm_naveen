@@ -2,7 +2,11 @@ package com.trading.kalyani.KPN.service.serviceImpl;
 
 import com.trading.kalyani.KPN.entity.InternalOrderBlock;
 import com.trading.kalyani.KPN.repository.InternalOrderBlockRepository;
+import com.trading.kalyani.KPN.model.HistoricalDataRequest;
+import com.trading.kalyani.KPN.model.HistoricalDataResponse;
+import com.trading.kalyani.KPN.model.HistoricalDataResponse.HistoricalCandle;
 import com.trading.kalyani.KPN.service.AutoTradingService;
+import com.trading.kalyani.KPN.service.InstrumentService;
 import com.trading.kalyani.KPN.service.InternalOrderBlockService;
 import com.trading.kalyani.KPN.service.RealTimePriceService;
 import com.trading.kalyani.KPN.service.TelegramNotificationService;
@@ -11,8 +15,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import jakarta.annotation.PreDestroy;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
 
@@ -27,8 +35,13 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
 
     private static final Logger logger = LoggerFactory.getLogger(RealTimePriceServiceImpl.class);
 
+    private static final ZoneId IST_ZONE_ID = ZoneId.of("Asia/Kolkata");
+
     @Autowired
     private InternalOrderBlockRepository iobRepository;
+
+    @Autowired(required = false)
+    private InstrumentService instrumentService;
 
     @Autowired(required = false)
     private InternalOrderBlockService iobService;
@@ -41,9 +54,12 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
 
     // Connection state
     private volatile boolean connected = false;
-    private LocalDateTime lastConnectionTime;
-    private LocalDateTime lastTickTime;
-    private int reconnectAttempts = 0;
+    private volatile LocalDateTime lastConnectionTime;
+    private volatile LocalDateTime lastTickTime;
+    private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
+    private volatile boolean reconnectInProgress = false;
+    // True once real Kite WebSocket is connected — disables the polling fallback automatically
+    private volatile boolean webSocketActive = false;
 
     // Subscribed instruments
     private final Set<Long> subscribedInstruments = ConcurrentHashMap.newKeySet();
@@ -54,8 +70,10 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
     // Last tick data
     private final Map<Long, Map<String, Object>> lastTicks = new ConcurrentHashMap<>();
 
-    // Tick history (limited to last 100 ticks per instrument)
-    private final Map<Long, LinkedList<Map<String, Object>>> tickHistory = new ConcurrentHashMap<>();
+    // Tick history (limited to last 100 ticks per instrument).
+    // ConcurrentHashMap guards map-level ops; all deque mutations and reads are done
+    // under synchronized(history) blocks, so no additional wrapper is needed.
+    private final Map<Long, Deque<Map<String, Object>>> tickHistory = new ConcurrentHashMap<>();
     private static final int MAX_TICK_HISTORY = 100;
 
     // Current candle data
@@ -67,10 +85,41 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
     // Zone touch alert callbacks
     private final Map<Long, Consumer<Map<String, Object>>> zoneTouchCallbacks = new ConcurrentHashMap<>();
 
-    // Executor for async operations
+    // Short-lived cache for fresh IOBs — avoids a DB hit on every tick.
+    // Refreshed at most once every FRESH_IOB_CACHE_TTL_MS milliseconds per instrument.
+    private static final long FRESH_IOB_CACHE_TTL_MS = 30_000; // 30 seconds
+    private final Map<Long, List<InternalOrderBlock>> freshIOBCache = new ConcurrentHashMap<>();
+    private final Map<Long, Long> freshIOBCacheTimestamp = new ConcurrentHashMap<>();
+
+    /** Returns cached fresh IOBs, reloading from DB if the cache is older than TTL. */
+    private List<InternalOrderBlock> getCachedFreshIOBs(Long instrumentToken) {
+        long now = System.currentTimeMillis();
+        Long cachedAt = freshIOBCacheTimestamp.get(instrumentToken);
+        if (cachedAt == null || (now - cachedAt) > FRESH_IOB_CACHE_TTL_MS) {
+            freshIOBCache.put(instrumentToken, iobRepository.findFreshIOBs(instrumentToken));
+            freshIOBCacheTimestamp.put(instrumentToken, now);
+        }
+        return freshIOBCache.getOrDefault(instrumentToken, Collections.emptyList());
+    }
+
+    /** Call this when an IOB status changes so the next tick picks up the updated list. */
+    public void invalidateFreshIOBCache(Long instrumentToken) {
+        freshIOBCache.remove(instrumentToken);
+        freshIOBCacheTimestamp.remove(instrumentToken);
+    }
+
+    // Executor for heartbeat and price polling
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
     private ScheduledFuture<?> heartbeatTask;
     private ScheduledFuture<?> pricePollingTask;
+
+    // Dedicated executor for listener dispatch — keeps tick-processing thread free
+    // from slow listeners (DB calls, HTTP requests, Telegram alerts, etc.)
+    private final ExecutorService listenerExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "price-listener-dispatch");
+        t.setDaemon(true);
+        return t;
+    });
 
     // ==================== Connection Management ====================
 
@@ -94,8 +143,8 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
             startPricePolling();
 
             connected = true;
-            lastConnectionTime = LocalDateTime.now();
-            reconnectAttempts = 0;
+            lastConnectionTime = LocalDateTime.now(IST_ZONE_ID);
+            reconnectAttempts.set(0);
 
             logger.info("Connected to real-time price feed. Subscribed instruments: {}",
                     subscribedInstruments.size());
@@ -145,7 +194,7 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
         status.put("lastConnectionTime", lastConnectionTime);
         status.put("lastTickTime", lastTickTime);
         status.put("subscribedInstruments", subscribedInstruments.size());
-        status.put("reconnectAttempts", reconnectAttempts);
+        status.put("reconnectAttempts", reconnectAttempts.get());
         status.put("activeListeners", priceListeners.values().stream()
                 .mapToInt(List::size).sum());
         return status;
@@ -153,48 +202,75 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
 
     private void startHeartbeat() {
         heartbeatTask = scheduler.scheduleAtFixedRate(() -> {
-            if (!connected) {
+            if (!connected && !reconnectInProgress) {
                 scheduleReconnect();
             }
         }, 30, 30, TimeUnit.SECONDS);
     }
 
     private void startPricePolling() {
-        // Fallback polling mechanism - polls every 5 seconds
+        // Fallback REST polling — only active when Kite WebSocket is not connected.
+        // Initial delay of 5s ensures connected=true is set before first execution.
         pricePollingTask = scheduler.scheduleAtFixedRate(() -> {
-            if (connected) {
+            if (!connected || webSocketActive) return;
+            try {
                 pollPrices();
+            } catch (Exception e) {
+                // Catch all exceptions — scheduleAtFixedRate silently kills the task on uncaught throws
+                logger.error("Price polling error (task still running): {}", e.getMessage(), e);
             }
-        }, 0, 5, TimeUnit.SECONDS);
+        }, 5, 5, TimeUnit.SECONDS);
+    }
+
+    /**
+     * Call this when the Kite WebSocket connection is established.
+     * Disables the REST polling fallback so both don't run simultaneously.
+     */
+    public void onWebSocketConnected() {
+        webSocketActive = true;
+        logger.info("WebSocket active — REST price polling suppressed");
+    }
+
+    /**
+     * Call this when the Kite WebSocket disconnects.
+     * Re-enables REST polling until WebSocket recovers.
+     */
+    public void onWebSocketDisconnected() {
+        webSocketActive = false;
+        logger.warn("WebSocket disconnected — falling back to REST price polling");
     }
 
     private void scheduleReconnect() {
-        if (reconnectAttempts >= 5) {
+        if (reconnectAttempts.get() >= 5) {
             logger.error("Max reconnect attempts reached. Manual intervention required.");
             return;
         }
 
-        reconnectAttempts++;
-        int delay = Math.min(30, reconnectAttempts * 5);
+        reconnectInProgress = true;
+        int attempt = reconnectAttempts.incrementAndGet();
+        int delay = Math.min(30, attempt * 5);
 
+        // Cancel the stale polling task so reconnect doesn't accumulate duplicate loops
+        if (pricePollingTask != null && !pricePollingTask.isCancelled()) {
+            pricePollingTask.cancel(false);
+        }
+
+        logger.info("Scheduling reconnect #{} in {}s", attempt, delay);
         scheduler.schedule(() -> {
-            logger.info("Attempting reconnect #{}", reconnectAttempts);
-            connect();
+            try {
+                logger.info("Attempting reconnect #{}", attempt);
+                connect();
+            } finally {
+                reconnectInProgress = false;
+            }
         }, delay, TimeUnit.SECONDS);
     }
 
     private void pollPrices() {
-        // This would typically fetch prices from a REST endpoint or cache
-        // For now, we simulate with the last known prices
-        for (Long token : subscribedInstruments) {
-            Double currentPrice = currentPrices.get(token);
-            if (currentPrice != null) {
-                // Simulate small price movement for testing
-                double variation = (Math.random() - 0.5) * 2; // ±1 point
-                double newPrice = currentPrice + variation;
-                handlePriceUpdate(token, newPrice);
-            }
-        }
+        // TODO: Replace with real Kite Quote API fetch when WebSocket is not available
+        // e.g. kiteService.getQuote(subscribedInstruments) → handlePriceUpdate(token, ltp)
+        // Do NOT simulate random prices here — fake prices trigger real auto-trade and mitigation logic.
+        logger.debug("Price polling active but no real data source configured — skipping tick.");
     }
 
     // ==================== Subscription Management ====================
@@ -210,7 +286,7 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
 
     @Override
     public void unsubscribeFromInstruments(List<Long> instrumentTokens) {
-        subscribedInstruments.removeAll(instrumentTokens);
+        subscribedInstruments.removeAll(new HashSet<>(instrumentTokens));
         instrumentTokens.forEach(token -> {
             currentPrices.remove(token);
             lastTicks.remove(token);
@@ -253,18 +329,23 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
 
     @Override
     public Map<String, Object> getLastTick(Long instrumentToken) {
-        return lastTicks.getOrDefault(instrumentToken, new HashMap<>());
+        Map<String, Object> tick = lastTicks.get(instrumentToken);
+        return tick != null ? new HashMap<>(tick) : new HashMap<>();
     }
 
     @Override
     public List<Map<String, Object>> getTickHistory(Long instrumentToken, int count) {
-        LinkedList<Map<String, Object>> history = tickHistory.get(instrumentToken);
-        if (history == null || history.isEmpty()) {
+        Deque<Map<String, Object>> history = tickHistory.get(instrumentToken);
+        if (history == null) {
             return new ArrayList<>();
         }
-
-        int size = Math.min(count, history.size());
-        return new ArrayList<>(history.subList(history.size() - size, history.size()));
+        // Hold the lock for the entire snapshot — prevents size() changing between
+        // the isEmpty check and the toArray copy, and avoids ConcurrentModificationException.
+        synchronized (history) {
+            if (history.isEmpty()) return new ArrayList<>();
+            int skip = Math.max(0, history.size() - count);
+            return history.stream().skip(skip).collect(java.util.stream.Collectors.toList());
+        }
     }
 
     // ==================== OHLC Data ====================
@@ -272,43 +353,130 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
     @Override
     public Map<String, Object> getCurrentCandle(Long instrumentToken, String timeframe) {
         String key = instrumentToken + "_" + timeframe;
-        return currentCandles.getOrDefault(key, new HashMap<>());
+        Map<String, Object> candle = currentCandles.get(key);
+        if (candle == null) return new HashMap<>();
+        // Synchronize on the candle — updateCurrentCandle mutates it under the same lock
+        synchronized (candle) {
+            return new HashMap<>(candle);
+        }
     }
 
     @Override
     public List<Map<String, Object>> getOHLCData(Long instrumentToken, String timeframe, int count) {
-        // This would return historical OHLC data
-        // For now, return empty list - implement with historical data API
-        return new ArrayList<>();
+        if (instrumentService == null) {
+            logger.warn("InstrumentService not available — cannot fetch OHLC data");
+            return new ArrayList<>();
+        }
+
+        String kiteInterval;
+        int lookbackDays;
+        switch (timeframe) {
+            case "1min":   kiteInterval = "minute";    lookbackDays = 1;   break;
+            case "5min":   kiteInterval = "5minute";   lookbackDays = 5;   break;
+            case "15min":  kiteInterval = "15minute";  lookbackDays = 10;  break;
+            case "1hour":  kiteInterval = "60minute";  lookbackDays = 30;  break;
+            case "daily":  kiteInterval = "day";       lookbackDays = 180; break;
+            default:
+                logger.warn("Unknown timeframe '{}' for OHLC fetch — defaulting to 5minute", timeframe);
+                kiteInterval = "5minute";
+                lookbackDays = 5;
+        }
+
+        try {
+            LocalDateTime toDate   = LocalDateTime.now(IST_ZONE_ID);
+            LocalDateTime fromDate = toDate.minusDays(lookbackDays);
+
+            HistoricalDataRequest request = HistoricalDataRequest.builder()
+                    .instrumentToken(String.valueOf(instrumentToken))
+                    .fromDate(fromDate)
+                    .toDate(toDate)
+                    .interval(kiteInterval)
+                    .continuous(false)
+                    .oi(false)
+                    .build();
+
+            HistoricalDataResponse response = instrumentService.getHistoricalData(request);
+            if (response == null || !response.isSuccess() || response.getCandles() == null) {
+                logger.warn("No OHLC data returned for token={} timeframe={}", instrumentToken, timeframe);
+                return new ArrayList<>();
+            }
+
+            List<HistoricalCandle> candles = response.getCandles();
+            // Return the last `count` candles as Maps
+            int skip = Math.max(0, candles.size() - count);
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (int i = skip; i < candles.size(); i++) {
+                HistoricalCandle c = candles.get(i);
+                Map<String, Object> ohlc = new LinkedHashMap<>();
+                ohlc.put("timestamp", c.getTimestamp());
+                ohlc.put("open",   c.getOpen());
+                ohlc.put("high",   c.getHigh());
+                ohlc.put("low",    c.getLow());
+                ohlc.put("close",  c.getClose());
+                ohlc.put("volume", c.getVolume());
+                result.add(ohlc);
+            }
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error fetching OHLC data for token={} timeframe={}: {}", instrumentToken, timeframe, e.getMessage(), e);
+            return new ArrayList<>();
+        }
     }
 
     // ==================== Price Listeners ====================
 
     @Override
     public void addPriceListener(Long instrumentToken, Consumer<Map<String, Object>> listener) {
+        if (listener == null) {
+            logger.warn("Attempted to add null price listener for token {}", instrumentToken);
+            return;
+        }
         priceListeners.computeIfAbsent(instrumentToken, k -> new CopyOnWriteArrayList<>())
                 .add(listener);
     }
 
+    /**
+     * Removes a price listener by object identity (==), not equals().
+     * Callers MUST hold the same Consumer reference that was passed to addPriceListener.
+     * Passing a new lambda instance will NOT remove the original — store the reference:
+     * <pre>
+     *   Consumer&lt;Map&lt;String,Object&gt;&gt; myListener = tick -> process(tick);
+     *   priceService.addPriceListener(token, myListener);
+     *   // later:
+     *   priceService.removePriceListener(token, myListener);
+     * </pre>
+     */
     @Override
     public void removePriceListener(Long instrumentToken, Consumer<Map<String, Object>> listener) {
         List<Consumer<Map<String, Object>>> listeners = priceListeners.get(instrumentToken);
-        if (listeners != null) {
-            listeners.remove(listener);
+        if (listeners == null) return;
+        // removeIf with == (identity) — equals() on lambdas is unreliable
+        listeners.removeIf(l -> l == listener);
+        // Clean up the map entry when the list becomes empty to avoid memory leak
+        if (listeners.isEmpty()) {
+            priceListeners.remove(instrumentToken, listeners);
         }
     }
 
     @Override
     public void broadcastPriceUpdate(Long instrumentToken, Map<String, Object> tickData) {
         List<Consumer<Map<String, Object>>> listeners = priceListeners.get(instrumentToken);
-        if (listeners != null) {
-            for (Consumer<Map<String, Object>> listener : listeners) {
+        if (listeners == null || listeners.isEmpty()) return;
+
+        // Snapshot the tick data once — each listener gets its own copy so a mutating
+        // listener cannot corrupt the map seen by subsequent listeners in the same broadcast.
+        Map<String, Object> snapshot = new HashMap<>(tickData);
+
+        for (Consumer<Map<String, Object>> listener : listeners) {
+            listenerExecutor.submit(() -> {
                 try {
-                    listener.accept(tickData);
+                    listener.accept(snapshot);
                 } catch (Exception e) {
-                    logger.error("Error in price listener: {}", e.getMessage());
+                    // Include 'e' so the full stack trace is written, not just the message
+                    logger.error("Error in price listener for token {}: {}", instrumentToken, e.getMessage(), e);
                 }
-            }
+            });
         }
     }
 
@@ -318,42 +486,56 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
     public void checkIOBZonesTouch(Long instrumentToken, Double currentPrice) {
         if (currentPrice == null) return;
 
-        List<InternalOrderBlock> freshIOBs = iobRepository.findFreshIOBs(instrumentToken);
+        // Use cache — avoids a DB hit on every tick (called every 5 seconds per instrument)
+        List<InternalOrderBlock> freshIOBs = getCachedFreshIOBs(instrumentToken);
+        if (freshIOBs.isEmpty()) return;
+
+        boolean anyZoneTouched = false;
 
         for (InternalOrderBlock iob : freshIOBs) {
-            boolean isLong = "LONG".equals(iob.getTradeDirection());
             boolean inZone = currentPrice >= iob.getZoneLow() && currentPrice <= iob.getZoneHigh();
+            if (!inZone) continue;
 
-            if (inZone) {
-                // Notify zone touch callback if registered
-                Consumer<Map<String, Object>> callback = zoneTouchCallbacks.get(iob.getId());
-                if (callback != null) {
-                    Map<String, Object> alert = new HashMap<>();
-                    alert.put("iobId", iob.getId());
-                    alert.put("instrumentToken", instrumentToken);
-                    alert.put("currentPrice", currentPrice);
-                    alert.put("zoneHigh", iob.getZoneHigh());
-                    alert.put("zoneLow", iob.getZoneLow());
-                    alert.put("direction", iob.getTradeDirection());
-                    alert.put("timestamp", LocalDateTime.now());
-                    callback.accept(alert);
-                }
+            anyZoneTouched = true;
 
-                // Trigger auto trading if enabled
-                if (autoTradingService != null && autoTradingService.isAutoTradingEnabled()) {
-                    Map<String, Object> conditions = autoTradingService.checkEntryConditions(
-                            iob.getId(), currentPrice);
-                    if (Boolean.TRUE.equals(conditions.get("valid"))) {
-                        logger.info("Zone touch detected for IOB {} - Auto trade conditions met",
-                                iob.getId());
-                    }
-                }
+            // Notify zone touch callback off the tick thread — slow callbacks must not block price updates
+            Consumer<Map<String, Object>> callback = zoneTouchCallbacks.get(iob.getId());
+            if (callback != null) {
+                Map<String, Object> alert = new HashMap<>();
+                alert.put("iobId", iob.getId());
+                alert.put("instrumentToken", instrumentToken);
+                alert.put("currentPrice", currentPrice);
+                alert.put("zoneHigh", iob.getZoneHigh());
+                alert.put("zoneLow", iob.getZoneLow());
+                alert.put("direction", iob.getTradeDirection());
+                alert.put("timestamp", LocalDateTime.now(IST_ZONE_ID));
+                listenerExecutor.submit(() -> callback.accept(alert));
+            }
 
-                // Check for mitigation
-                if (iobService != null) {
-                    iobService.checkMitigation(instrumentToken, currentPrice);
+            // Auto trade: check conditions and execute if valid
+            // IOBScheduler.processAutoTrades() also runs every minute — this path fires
+            // immediately on zone touch for lower-latency entry.
+            if (autoTradingService != null && autoTradingService.isAutoTradingEnabled()) {
+                Map<String, Object> conditions = autoTradingService.checkEntryConditions(
+                        iob.getId(), currentPrice);
+                if (Boolean.TRUE.equals(conditions.get("valid"))) {
+                    logger.info("Zone touch: IOB {} entry conditions met — executing auto trade", iob.getId());
+                    listenerExecutor.submit(() -> {
+                        try {
+                            autoTradingService.placeIOBOrder(iob.getId(), currentPrice, null);
+                        } catch (Exception e) {
+                            logger.error("Auto trade execution failed for IOB {}: {}", iob.getId(), e.getMessage(), e);
+                        }
+                    });
                 }
             }
+        }
+
+        // checkMitigation is instrument-level — call once outside the loop, not once per IOB.
+        // Only call when a zone was touched to avoid redundant DB checks on every tick.
+        // The scheduler's per-minute mitigation check handles all other cases.
+        if (anyZoneTouched && iobService != null) {
+            iobService.checkMitigation(instrumentToken, currentPrice);
         }
     }
 
@@ -366,7 +548,7 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
             return result;
         }
 
-        List<InternalOrderBlock> freshIOBs = iobRepository.findFreshIOBs(instrumentToken);
+        List<InternalOrderBlock> freshIOBs = getCachedFreshIOBs(instrumentToken);
 
         if (freshIOBs.isEmpty()) {
             result.put("hasNearbyZone", false);
@@ -417,7 +599,7 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
 
         Double previousPrice = currentPrices.get(instrumentToken);
         currentPrices.put(instrumentToken, newPrice);
-        lastTickTime = LocalDateTime.now();
+        lastTickTime = LocalDateTime.now(IST_ZONE_ID);
 
         // Create tick data
         Map<String, Object> tickData = new HashMap<>();
@@ -432,10 +614,15 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
         // Store last tick
         lastTicks.put(instrumentToken, tickData);
 
-        // Add to history
-        tickHistory.computeIfAbsent(instrumentToken, k -> new LinkedList<>()).add(tickData);
-        if (tickHistory.get(instrumentToken).size() > MAX_TICK_HISTORY) {
-            tickHistory.get(instrumentToken).removeFirst();
+        // Add to history — computeIfAbsent is atomic at map level; synchronize on the deque
+        // for the compound add+trim so a concurrent getTickHistory cannot see a torn state.
+        Deque<Map<String, Object>> history =
+                tickHistory.computeIfAbsent(instrumentToken, k -> new ArrayDeque<>());
+        synchronized (history) {
+            history.addLast(tickData);
+            if (history.size() > MAX_TICK_HISTORY) {
+                history.removeFirst();
+            }
         }
 
         // Update current candle
@@ -451,18 +638,21 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
     private void updateCurrentCandle(Long instrumentToken, Double price) {
         String key = instrumentToken + "_1min";
         Map<String, Object> candle = currentCandles.computeIfAbsent(key, k -> {
-            Map<String, Object> newCandle = new HashMap<>();
+            Map<String, Object> newCandle = new ConcurrentHashMap<>();
             newCandle.put("open", price);
             newCandle.put("high", price);
             newCandle.put("low", price);
             newCandle.put("close", price);
-            newCandle.put("startTime", LocalDateTime.now());
+            newCandle.put("startTime", LocalDateTime.now(IST_ZONE_ID));
             return newCandle;
         });
 
-        candle.put("close", price);
-        candle.put("high", Math.max((Double) candle.get("high"), price));
-        candle.put("low", Math.min((Double) candle.get("low"), price));
+        // Synchronize on the candle to make the read-modify-write on high/low atomic
+        synchronized (candle) {
+            candle.put("close", price);
+            candle.put("high", Math.max((Double) candle.get("high"), price));
+            candle.put("low", Math.min((Double) candle.get("low"), price));
+        }
     }
 
     /**
@@ -479,9 +669,29 @@ public class RealTimePriceServiceImpl implements RealTimePriceService {
      * Initialize with seed prices (useful for testing)
      */
     public void seedPrices(Map<Long, Double> prices) {
+        // Only populate the price cache — do NOT push through handlePriceUpdate,
+        // which would trigger zone checks, auto-trade conditions, and mitigation on seed data.
         currentPrices.putAll(prices);
-        for (Map.Entry<Long, Double> entry : prices.entrySet()) {
-            handlePriceUpdate(entry.getKey(), entry.getValue());
+        logger.info("Seeded {} instrument prices (no events fired)", prices.size());
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        disconnect();
+        scheduler.shutdown();
+        listenerExecutor.shutdown();
+        try {
+            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                scheduler.shutdownNow();
+            }
+            if (!listenerExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                listenerExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            scheduler.shutdownNow();
+            listenerExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
         }
+        logger.info("RealTimePriceService executors shut down");
     }
 }

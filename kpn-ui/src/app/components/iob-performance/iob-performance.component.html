@@ -369,6 +369,18 @@
                 </mat-select>
               </mat-form-field>
 
+              <mat-form-field appearance="outline">
+                <mat-label>Min Confidence (%)</mat-label>
+                <input matInput type="number" [(ngModel)]="backtestMinConfidence" min="0" max="100">
+                <mat-hint>Only trade IOBs above this confidence</mat-hint>
+              </mat-form-field>
+
+              <div class="backtest-toggle">
+                <mat-slide-toggle [(ngModel)]="backtestRequireFvg" color="primary">
+                  Require FVG
+                </mat-slide-toggle>
+              </div>
+
               <button mat-raised-button color="primary"
                       (click)="runBacktest()"
                       [disabled]="isRunningBacktest">
@@ -428,6 +440,38 @@
                 <span class="label">Total Points</span>
                 <span class="value" [class.profit]="backtestResult.totalPointsCaptured > 0" [class.loss]="backtestResult.totalPointsCaptured < 0">
                   {{ formatNumber(backtestResult.totalPointsCaptured) }}
+                </span>
+              </div>
+              <div class="result-item">
+                <span class="label">Profit Factor</span>
+                <span class="value" [class.good]="(backtestResult.profitFactor || 0) >= 1.5" [class.loss]="(backtestResult.profitFactor || 0) < 1">
+                  {{ formatNumber(backtestResult.profitFactor) }}
+                </span>
+              </div>
+              <div class="result-item">
+                <span class="label">Max Drawdown</span>
+                <span class="value loss">{{ formatPercent(backtestResult.maxDrawdownPercent) }}</span>
+              </div>
+              <div class="result-item">
+                <span class="label">Expectancy (₹)</span>
+                <span class="value" [class.profit]="(backtestResult.expectancy || 0) > 0" [class.loss]="(backtestResult.expectancy || 0) < 0">
+                  {{ formatCurrency(backtestResult.expectancy) }}
+                </span>
+              </div>
+              <div class="result-item">
+                <span class="label">Avg Win / Avg Loss</span>
+                <span class="value">
+                  <span class="win">{{ formatCurrency(backtestResult.avgWin) }}</span>
+                  /
+                  <span class="loss">{{ formatCurrency(backtestResult.avgLoss) }}</span>
+                </span>
+              </div>
+              <div class="result-item">
+                <span class="label">Win / Loss Streak</span>
+                <span class="value">
+                  <span class="win">{{ backtestResult.maxWinStreak ?? '--' }}</span>
+                  /
+                  <span class="loss">{{ backtestResult.maxLossStreak ?? '--' }}</span>
                 </span>
               </div>
             </div>

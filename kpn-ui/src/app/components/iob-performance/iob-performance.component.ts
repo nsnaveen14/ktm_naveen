@@ -108,6 +108,8 @@ export class IobPerformanceComponent implements OnInit, OnDestroy, AfterViewInit
   backtestStartDate: Date = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   backtestEndDate: Date = new Date();
   backtestTimeframe = '5min';
+  backtestMinConfidence = 85;
+  backtestRequireFvg = false;
 
   // Config form
   configMinConfidence = 85; // Minimum 85% confidence for auto-trading
@@ -303,7 +305,9 @@ export class IobPerformanceComponent implements OnInit, OnDestroy, AfterViewInit
       this.backtestInstrument,
       startDate,
       endDate,
-      this.backtestTimeframe
+      this.backtestTimeframe,
+      this.backtestMinConfidence,
+      this.backtestRequireFvg
     ).subscribe({
       next: (data) => {
         this.backtestResult = data;
@@ -416,6 +420,15 @@ export class IobPerformanceComponent implements OnInit, OnDestroy, AfterViewInit
       ['Average RR', this.backtestResult.averageRR?.toFixed(2)],
       ['Total P&L', `₹${this.backtestResult.totalPnl?.toFixed(2)}`],
       ['Total Points', this.backtestResult.totalPointsCaptured?.toFixed(2)],
+      ['Profit Factor', this.backtestResult.profitFactor?.toFixed(2)],
+      ['Max Drawdown %', `${this.backtestResult.maxDrawdownPercent?.toFixed(1)}%`],
+      ['Expectancy', `₹${this.backtestResult.expectancy?.toFixed(2)}`],
+      ['Avg Win', `₹${this.backtestResult.avgWin?.toFixed(2)}`],
+      ['Avg Loss', `₹${this.backtestResult.avgLoss?.toFixed(2)}`],
+      ['Max Win Streak', this.backtestResult.maxWinStreak],
+      ['Max Loss Streak', this.backtestResult.maxLossStreak],
+      ['Min Confidence Used', `${this.backtestMinConfidence}%`],
+      ['Require FVG', this.backtestRequireFvg ? 'Yes' : 'No'],
       ['']
     ];
 

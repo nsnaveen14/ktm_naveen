@@ -2,7 +2,6 @@ package com.trading.kalyani.KPN.config;
 
 import com.trading.kalyani.KPN.entity.SimulatedTrade;
 import com.trading.kalyani.KPN.service.CandlePredictionService;
-import com.trading.kalyani.KPN.service.LiquiditySweepService;
 import com.trading.kalyani.KPN.service.SimulatedTradingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,9 +39,6 @@ public class CandlePredictionScheduler {
     @Autowired
     private SimulatedTradingService simulatedTradingService;
 
-    @Autowired
-    private LiquiditySweepService liquiditySweepService;
-
     @Value("${candle.prediction.job.enabled:true}")
     private boolean predictionJobEnabled;
 
@@ -51,9 +47,6 @@ public class CandlePredictionScheduler {
 
     @Value("${simulated.trading.auto.enabled:true}")
     private boolean simulatedAutoTradingEnabled;
-
-    @Value("${liquidity.sweep.analysis.enabled:true}")
-    private boolean liquiditySweepAnalysisEnabled;
 
     /**
      * Prediction Job - Runs every minute during market hours (9:15 AM to 3:30 PM IST).
@@ -283,51 +276,4 @@ public class CandlePredictionScheduler {
         }
     }
 
-    // ============= Liquidity Sweep Analysis Scheduler =============
-
-    /**
-     * Liquidity Sweep Analysis Job - Runs every 15 minutes during market hours.
-     * Analyzes market structure (BSL/SSL), whale activity, and generates trade signals.
-     *
-     * Cron: At minute 5, 20, 35, 50 of every hour, Monday to Friday, 9:30 AM to 3:15 PM IST
-     * Offset by 5 minutes from verificationJob ("0,15,30,45") to avoid single-thread scheduler contention.
-     */
-    @Scheduled(cron = "0 5,20,35,50 9-15 * * MON-FRI", zone = "Asia/Kolkata")
-    public void runLiquiditySweepAnalysis() {
-        if (!liquiditySweepAnalysisEnabled) {
-            logger.debug("Liquidity Sweep analysis is disabled via configuration");
-            return;
-        }
-
-        LocalTime now = LocalTime.now(IST);
-        // Only run after market has been open for at least 15 minutes
-        if (now.isBefore(MARKET_OPEN.plusMinutes(15)) || now.isAfter(MARKET_CLOSE.minusMinutes(15))) {
-            return;
-        }
-
-        try {
-            logger.info("🐋 Running Liquidity Sweep analysis at {}", now);
-
-            // Run analysis for NIFTY (appJobConfigNum 1)
-            var analysis = liquiditySweepService.analyzeLiquiditySweep(1);
-
-            if (analysis != null) {
-                logger.info("🐋 Liquidity Sweep Analysis Complete:");
-                logger.info("   Signal: {} ({})", analysis.getSignalType(), analysis.getSignalStrength());
-                logger.info("   Confidence: {}%", analysis.getSignalConfidence());
-                logger.info("   Whale Activity: {} ({})", analysis.getHasWhaleActivity(), analysis.getWhaleType());
-                logger.info("   Sweep Type: {}", analysis.getSweepType());
-
-                if (Boolean.TRUE.equals(analysis.getIsValidSetup())) {
-                    logger.info("   ✅ VALID SETUP - Entry: {}, SL: {}, TP: {}",
-                            analysis.getEntryPrice(),
-                            analysis.getStopLossPrice(),
-                            analysis.getTakeProfit2());
-                }
-            }
-
-        } catch (Exception e) {
-            logger.error("Error in Liquidity Sweep analysis scheduler: {}", e.getMessage(), e);
-        }
-    }
 }

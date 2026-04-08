@@ -885,3 +885,34 @@ tr.mat-row.outcome-full-win {
 tr.mat-row.outcome-partial-win {
   background: rgba(255, 193, 7, 0.03);
 }
+
+/* Status filter — force white text on trigger and panel */
+::ng-deep .mat-mdc-select-value,
+::ng-deep .mat-mdc-select-value-text,
+::ng-deep .mat-mdc-select-placeholder {
+  color: #ffffff !important;
+}
+
+::ng-deep .mat-mdc-option .mdc-list-item__primary-text {
+  color: #ffffff !important;
+}
+
+::ng-deep .mat-mdc-select-panel {
+  background: #1e1e2e !important;
+}
+
+/* Status filter dropdown option colors */
+.status-opt-fresh {
+  color: #00e676;
+  font-weight: 600;
+}
+
+.status-opt-early {
+  color: #ffab40;
+  font-weight: 600;
+}
+
+.status-opt-mitigated {
+  color: #ef5350;
+  font-weight: 600;
+}

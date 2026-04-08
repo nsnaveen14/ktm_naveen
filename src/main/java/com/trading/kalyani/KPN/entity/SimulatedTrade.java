@@ -62,6 +62,9 @@ public class SimulatedTrade {
     @Column(name = "underlying_stop_loss")
     private Double underlyingStopLoss; // index-level SL (IOB trades only)
 
+    @Column(name = "iob_zone_midpoint")
+    private Double iobZoneMidpoint; // IOB zone midpoint at time of trade (IOB trades only)
+
     @Column(name = "iob_id")
     private Long iobId; // IOB that triggered this trade (IOB_SIGNAL trades only)
 

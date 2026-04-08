@@ -237,3 +237,22 @@ mat-expansion-panel mat-panel-title mat-icon {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Colored dropdown options ──────────────────────────────────── */
+.select-opt-row,
+.select-trigger-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.opt-icon {
+  font-size: 18px;
+  height: 18px;
+  width: 18px;
+  flex-shrink: 0;
+}
+
+.opt-label {
+  font-weight: 500;
+}

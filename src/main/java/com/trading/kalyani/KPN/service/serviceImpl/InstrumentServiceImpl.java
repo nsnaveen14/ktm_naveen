@@ -276,6 +276,15 @@ public class InstrumentServiceImpl implements InstrumentService {
                 return response;
             }
 
+            // Log diagnostic info before API call
+            logger.info("Calling Kite API with: token={}, fromDate={}, toDate={}, interval={}, continuous={}, oi={}",
+                    request.getInstrumentToken(),
+                    DateUtilities.convertLocalDateTimeToDate(request.getFromDate()),
+                    DateUtilities.convertLocalDateTimeToDate(request.getToDate()),
+                    request.getInterval(),
+                    request.isContinuous(),
+                    request.isOi());
+
             // Fetch historical data from Kite Connect API
             HistoricalData historicalData = kiteConnect.getHistoricalData(
                     DateUtilities.convertLocalDateTimeToDate(request.getFromDate()),
@@ -312,10 +321,19 @@ public class InstrumentServiceImpl implements InstrumentService {
 
             logger.info("Fetched {} historical candles for instrument {} with interval {}",
                     candles.size(), request.getInstrumentToken(), request.getInterval());
+            
+            if (candles.isEmpty()) {
+                logger.warn("No candles returned for instrument {} from {} to {} on interval {}. " +
+                        "This could indicate: 1) Market was closed on those dates, " +
+                        "2) Invalid instrument token, 3) Kite API access issues",
+                        request.getInstrumentToken(), request.getFromDate(), request.getToDate(), request.getInterval());
+            }
 
         } catch (KiteException | IOException e) {
-            logger.error("Error fetching historical data for instrument {}: {}",
-                    request.getInstrumentToken(), e.getMessage(), e);
+            logger.error("Error fetching historical data for instrument {} (token: {}) from {} to {} on interval {}: {}",
+                    request.getInstrumentToken(), request.getInstrumentToken(), 
+                    request.getFromDate(), request.getToDate(), request.getInterval(),
+                    e.getMessage(), e);
             response.setSuccess(false);
             response.setMessage("Error fetching historical data: " + e.getMessage());
             response.setCandles(new ArrayList<>());

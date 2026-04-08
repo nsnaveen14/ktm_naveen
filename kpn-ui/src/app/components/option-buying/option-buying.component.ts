@@ -44,7 +44,6 @@ export class OptionBuyingComponent implements OnInit, OnDestroy {
     enabled: false,
     enableIob: true,
     enableBrahmastra: true,
-    enableGainzAlgo: true,
     enableZeroHero: true,
     numLots: 2,
     targetPercent: 30,
@@ -65,8 +64,10 @@ export class OptionBuyingComponent implements OnInit, OnDestroy {
     maxPremium: 300,
     // Optimization 3
     trailingSlEnabled: false,
-    trailingActivationPct: 50,
-    trailingTrailPct: 50
+    trailingActivationPct: 40,
+    trailingTrailPct: 50,
+    // Zero Hero
+    zeroHeroMinScore: 2
   };
 
   status: OptionBuyingStatus = {
@@ -80,8 +81,8 @@ export class OptionBuyingComponent implements OnInit, OnDestroy {
   todayTrades: OptionBuyingTrade[] = [];
   loading = false;
 
-  openTradesColumns = ['symbol', 'type', 'entry', 'target', 'sl', 'pnl', 'action'];
-  todayTradesColumns = ['symbol', 'type', 'entry', 'exit', 'pnl', 'reason'];
+  openTradesColumns = ['symbol', 'type', 'entryInfo', 'underlyingSl', 'target', 'sl', 'pnl', 'action'];
+  todayTradesColumns = ['symbol', 'type', 'entryInfo', 'underlyingSl', 'exit', 'pnl', 'reason'];
 
   strengthOptions = ['STRONG', 'MODERATE', 'WEAK'];
 

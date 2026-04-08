@@ -30,4 +30,12 @@ public interface ZeroHeroSignalService {
      *   signalStrength  (String)  STRONG / MODERATE
      */
     Map<String, Object> checkSignal(Map<String, Object> liveData);
+
+    /**
+     * Check signal with a configurable minimum momentum score.
+     *
+     * @param liveData live market data
+     * @param minScore minimum number of momentum indicators (out of 3) that must agree (2 or 3)
+     */
+    Map<String, Object> checkSignal(Map<String, Object> liveData, int minScore);
 }

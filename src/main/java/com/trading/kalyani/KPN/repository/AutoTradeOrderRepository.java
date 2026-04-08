@@ -7,8 +7,10 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 @Repository
 public interface AutoTradeOrderRepository extends JpaRepository<AutoTradeOrder, Long> {
@@ -18,6 +20,9 @@ public interface AutoTradeOrderRepository extends JpaRepository<AutoTradeOrder, 
     Optional<AutoTradeOrder> findByKiteOrderId(String kiteOrderId);
 
     Optional<AutoTradeOrder> findByIobId(Long iobId);
+
+    @Query("SELECT o.iobId FROM AutoTradeOrder o WHERE o.iobId IN :iobIds")
+    Set<Long> findExistingOrderIobIds(@Param("iobIds") Collection<Long> iobIds);
 
     @Query("SELECT o FROM AutoTradeOrder o WHERE o.status IN ('PENDING', 'PLACED', 'OPEN') " +
             "ORDER BY o.orderTime DESC")

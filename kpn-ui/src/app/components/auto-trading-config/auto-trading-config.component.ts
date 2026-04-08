@@ -91,22 +91,34 @@ export class AutoTradingConfigComponent implements OnInit, OnDestroy {
   private refreshInterval: any;
 
   readonly entryTypes = [
-    { value: 'ZONE_TOUCH', label: 'Zone Touch' },
-    { value: 'ZONE_MIDPOINT', label: 'Zone Midpoint' },
-    { value: 'CONFIRMATION_CANDLE', label: 'Confirmation Candle' }
+    { value: 'ZONE_TOUCH',          label: 'Zone Touch',          color: '#FF9800', icon: 'touch_app' },
+    { value: 'ZONE_MIDPOINT',       label: 'Zone Midpoint',       color: '#2196F3', icon: 'center_focus_strong' },
+    { value: 'CONFIRMATION_CANDLE', label: 'Confirmation Candle', color: '#4CAF50', icon: 'check_circle' }
   ];
 
   readonly trailTriggers = [
-    { value: 'TARGET_1', label: 'At Target 1' },
-    { value: 'BREAKEVEN', label: 'At Breakeven' },
-    { value: 'POINTS', label: 'Fixed Points' }
+    { value: 'TARGET_1',  label: 'At Target 1',   color: '#4CAF50', icon: 'flag' },
+    { value: 'BREAKEVEN', label: 'At Breakeven',   color: '#FF9800', icon: 'balance' },
+    { value: 'POINTS',    label: 'Fixed Points',   color: '#9C27B0', icon: 'straighten' }
   ];
 
   readonly exitTargets = [
-    { value: 'TARGET_1', label: 'Target 1' },
-    { value: 'TARGET_2', label: 'Target 2' },
-    { value: 'TARGET_3', label: 'Target 3' }
+    { value: 'TARGET_1', label: 'Target 1 (Conservative)', color: '#FF9800', icon: 'looks_one' },
+    { value: 'TARGET_2', label: 'Target 2 (Moderate)',     color: '#2196F3', icon: 'looks_two' },
+    { value: 'TARGET_3', label: 'Target 3 (Aggressive)',   color: '#4CAF50', icon: 'looks_3' }
   ];
+
+  getOptionLabel(arr: {value: string; label: string}[], value: string): string {
+    return arr.find(o => o.value === value)?.label ?? value;
+  }
+
+  getOptionColor(arr: {value: string; color: string}[], value: string): string {
+    return arr.find(o => o.value === value)?.color ?? '#aaa';
+  }
+
+  getOptionIcon(arr: {value: string; icon: string}[], value: string): string {
+    return arr.find(o => o.value === value)?.icon ?? 'circle';
+  }
 
   constructor(
     private performanceService: PerformanceService,

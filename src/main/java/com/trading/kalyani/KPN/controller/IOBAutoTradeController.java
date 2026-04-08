@@ -315,13 +315,19 @@ public class IOBAutoTradeController {
             @RequestParam(defaultValue = "256265") Long instrumentToken,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
-            @RequestParam(defaultValue = "5min") String timeframe) {
+            @RequestParam(defaultValue = "5min") String timeframe,
+            @RequestParam(required = false) Double minConfidence,
+            @RequestParam(defaultValue = "false") Boolean requireFvg) {
         try {
-            logger.info("Running backtest: {} from {} to {} on {}",
-                    instrumentToken, startDate, endDate, timeframe);
+            logger.info("Running backtest: {} from {} to {} on {} (minConf={}, requireFvg={})",
+                    instrumentToken, startDate, endDate, timeframe, minConfidence, requireFvg);
+
+            Map<String, Object> params = new HashMap<>();
+            if (minConfidence != null) params.put("minConfidence", minConfidence);
+            params.put("requireFvg", requireFvg);
 
             Map<String, Object> results = autoTradeService.runBacktest(
-                    instrumentToken, startDate, endDate, timeframe);
+                    instrumentToken, startDate, endDate, timeframe, params);
 
             return ResponseEntity.ok(results);
         } catch (Exception e) {

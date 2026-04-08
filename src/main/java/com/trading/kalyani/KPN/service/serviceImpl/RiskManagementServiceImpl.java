@@ -18,9 +18,11 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.DoubleAdder;
 
 import static com.trading.kalyani.KPN.constants.ApplicationConstants.*;
 
@@ -60,11 +62,17 @@ public class RiskManagementServiceImpl implements RiskManagementService {
     @Value("${risk.default.atr.sl.multiplier:1.5}")
     private Double defaultAtrSlMultiplier;
 
-    // In-memory tracking for daily metrics
+    private static final ZoneId IST_ZONE_ID = ZoneId.of("Asia/Kolkata");
+
+    // In-memory tracking for daily metrics — thread-safe primitives
     private final Map<Long, Map<String, Object>> openPositions = new ConcurrentHashMap<>();
-    private Double dailyRealizedPnl = 0.0;
-    private Double dailyUnrealizedPnl = 0.0;
-    private Integer dailyTradeCount = 0;
+    // DoubleAdder is the preferred concurrent accumulator for sums (better than AtomicDouble)
+    private final DoubleAdder dailyRealizedPnl  = new DoubleAdder();
+    private volatile double   dailyUnrealizedPnl = 0.0;  // replaced wholesale, not accumulated
+    private final AtomicInteger dailyTradeCount  = new AtomicInteger(0);
+
+    // Cached account config — invalidated on every write; avoids a DB hit in every risk check
+    private volatile RiskManagement cachedAccountConfig = null;
 
     // ==================== Account Configuration ====================
 
@@ -109,6 +117,7 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         config.setTradingAllowed(true);
         config.setRiskAssessmentScore(100.0);
 
+        invalidateAccountConfigCache();
         riskManagementRepository.save(config);
         logger.info("Initialized risk management: Capital={}, Risk/Trade={}%, Max Daily Loss={}%",
                 config.getAccountCapital(), config.getRiskPerTradePercent(), config.getMaxDailyLossPercent());
@@ -118,37 +127,64 @@ public class RiskManagementServiceImpl implements RiskManagementService {
 
     @Override
     public RiskManagement getAccountConfig() {
-        return riskManagementRepository.findTopByInstrumentTokenIsNullOrderByAnalysisTimestampDesc()
+        if (cachedAccountConfig != null) return cachedAccountConfig;
+        cachedAccountConfig = riskManagementRepository
+                .findTopByInstrumentTokenIsNullOrderByAnalysisTimestampDesc()
                 .orElseGet(() -> initializeAccount(null, null, null, null));
+        return cachedAccountConfig;
+    }
+
+    private void invalidateAccountConfigCache() {
+        cachedAccountConfig = null;
     }
 
     @Override
     public void updateAccountCapital(Double newCapital) {
+        if (newCapital == null || newCapital <= 0) {
+            throw new IllegalArgumentException("Account capital must be positive, got: " + newCapital);
+        }
+
         RiskManagement config = getAccountConfig();
         config.setAccountCapital(newCapital);
-        config.setMaxRiskPerTrade(newCapital * config.getRiskPerTradePercent() / 100);
-        config.setMaxDailyLossAmount(newCapital * config.getMaxDailyLossPercent() / 100);
+
+        // Guard against null percent fields (e.g. partial DB row) before auto-unbox
+        if (config.getRiskPerTradePercent() != null) {
+            config.setMaxRiskPerTrade(newCapital * config.getRiskPerTradePercent() / 100);
+        }
+        if (config.getMaxDailyLossPercent() != null) {
+            config.setMaxDailyLossAmount(newCapital * config.getMaxDailyLossPercent() / 100);
+        }
+
+        // Invalidate AFTER save — concurrent readers get old DB value during the write,
+        // not null (which would cause a re-fetch of the pre-mutation row mid-transaction)
         riskManagementRepository.save(config);
+        invalidateAccountConfigCache();
     }
 
     @Override
     public void updateRiskParameters(Double riskPerTradePercent, Double maxDailyLossPercent,
                                      Double maxPortfolioHeatPercent) {
         RiskManagement config = getAccountConfig();
+        Double capital = config.getAccountCapital();
 
         if (riskPerTradePercent != null) {
             config.setRiskPerTradePercent(riskPerTradePercent);
-            config.setMaxRiskPerTrade(config.getAccountCapital() * riskPerTradePercent / 100);
+            if (capital != null) {
+                config.setMaxRiskPerTrade(capital * riskPerTradePercent / 100);
+            }
         }
         if (maxDailyLossPercent != null) {
             config.setMaxDailyLossPercent(maxDailyLossPercent);
-            config.setMaxDailyLossAmount(config.getAccountCapital() * maxDailyLossPercent / 100);
+            if (capital != null) {
+                config.setMaxDailyLossAmount(capital * maxDailyLossPercent / 100);
+            }
         }
         if (maxPortfolioHeatPercent != null) {
             config.setMaxPortfolioHeatPercent(maxPortfolioHeatPercent);
         }
 
         riskManagementRepository.save(config);
+        invalidateAccountConfigCache();
     }
 
     // ==================== Position Sizing ====================
@@ -207,27 +243,55 @@ public class RiskManagementServiceImpl implements RiskManagementService {
             return Map.of("error", "Invalid IOB - missing entry or stop loss");
         }
 
-        // Get lot size for instrument
+        if (iob.getInstrumentToken() == null) {
+            return Map.of("error", "Invalid IOB - missing instrument token");
+        }
+
         Integer lotSize = getLotSize(iob.getInstrumentToken());
 
-        return calculatePositionSize(
+        Map<String, Object> result = calculatePositionSize(
                 iob.getInstrumentToken(),
                 iob.getEntryPrice(),
                 iob.getStopLoss(),
                 lotSize
         );
+
+        // Guard against zero quantity reaching the order placement layer
+        Integer qty = (Integer) result.get("calculatedQuantity");
+        if (qty == null || qty <= 0) {
+            logger.warn("Position sizing returned 0 quantity for IOB {} — riskPerUnit likely exceeds maxRisk",
+                    iob.getId());
+            result = new HashMap<>(result);
+            result.put("calculatedQuantity", 0);
+        }
+
+        return result;
     }
 
     @Override
     public Integer getMaxPositionSize(Long instrumentToken, Double entryPrice, Double stopLoss) {
-        Map<String, Object> sizing = calculatePositionSize(instrumentToken, entryPrice, stopLoss, null);
+        if (entryPrice == null || stopLoss == null) {
+            logger.warn("getMaxPositionSize called with null entryPrice or stopLoss for token {}", instrumentToken);
+            return 0;
+        }
+        // Pass lot size so quantity is rounded to valid lot multiples
+        Integer lotSize = getLotSize(instrumentToken);
+        Map<String, Object> sizing = calculatePositionSize(instrumentToken, entryPrice, stopLoss, lotSize);
         return (Integer) sizing.getOrDefault("calculatedQuantity", 0);
     }
 
     @Override
     public Double calculateRiskAmount(Integer quantity, Double entryPrice, Double stopLoss) {
-        if (quantity == null || entryPrice == null || stopLoss == null) return 0.0;
-        return quantity * Math.abs(entryPrice - stopLoss);
+        if (quantity == null || entryPrice == null || stopLoss == null) {
+            logger.warn("calculateRiskAmount called with null parameters — returning 0.0 (quantity={}, entry={}, sl={})",
+                    quantity, entryPrice, stopLoss);
+            return 0.0;
+        }
+        double riskPerUnit = Math.abs(entryPrice - stopLoss);
+        if (riskPerUnit == 0.0) {
+            logger.warn("calculateRiskAmount: entryPrice == stopLoss ({}) — stop loss is at entry, risk is 0", entryPrice);
+        }
+        return quantity * riskPerUnit;
     }
 
     // ==================== ATR-Based Risk ====================
@@ -315,19 +379,24 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         return (int) (basePositionSize * volatilityRatio);
     }
 
+    // Convenience accessors — read atomic/adder values once to avoid repeated .sum()/.get() calls
+    private double realizedPnl()  { return dailyRealizedPnl.sum(); }
+    private double totalDailyPnl() { return dailyRealizedPnl.sum() + dailyUnrealizedPnl; }
+    private int    tradeCount()   { return dailyTradeCount.get(); }
+
     // ==================== Daily Loss Limits ====================
 
     @Override
     public boolean isDailyLossLimitReached() {
         RiskManagement config = getAccountConfig();
-        double totalLoss = Math.min(0, dailyRealizedPnl + dailyUnrealizedPnl);
+        double totalLoss = Math.min(0, totalDailyPnl());
         return Math.abs(totalLoss) >= config.getMaxDailyLossAmount();
     }
 
     @Override
     public Double getRemainingDailyLoss() {
         RiskManagement config = getAccountConfig();
-        double totalLoss = Math.min(0, dailyRealizedPnl + dailyUnrealizedPnl);
+        double totalLoss = Math.min(0, totalDailyPnl());
         return config.getMaxDailyLossAmount() - Math.abs(totalLoss);
     }
 
@@ -336,10 +405,10 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         if (pnl == null) return;
 
         if (isRealized) {
-            dailyRealizedPnl += pnl;
-            dailyTradeCount++;
+            dailyRealizedPnl.add(pnl);
+            dailyTradeCount.incrementAndGet();
         } else {
-            dailyUnrealizedPnl = pnl; // Replace unrealized P&L
+            dailyUnrealizedPnl = pnl; // Replace unrealized P&L (volatile write)
         }
 
         updateDailyPnlInConfig();
@@ -356,13 +425,14 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         RiskManagement config = getAccountConfig();
         Map<String, Object> summary = new HashMap<>();
 
-        summary.put("realizedPnl", dailyRealizedPnl);
+        double realized = realizedPnl();
+        summary.put("realizedPnl", realized);
         summary.put("unrealizedPnl", dailyUnrealizedPnl);
-        summary.put("totalPnl", dailyRealizedPnl + dailyUnrealizedPnl);
+        summary.put("totalPnl", realized + dailyUnrealizedPnl);
         summary.put("maxDailyLoss", config.getMaxDailyLossAmount());
         summary.put("remainingLossAllowance", getRemainingDailyLoss());
         summary.put("limitReached", isDailyLossLimitReached());
-        summary.put("tradeCount", dailyTradeCount);
+        summary.put("tradeCount", tradeCount());
         summary.put("maxTrades", config.getMaxDailyTrades());
 
         return summary;
@@ -371,14 +441,15 @@ public class RiskManagementServiceImpl implements RiskManagementService {
     @Override
     public boolean isDailyTradeLimitReached() {
         RiskManagement config = getAccountConfig();
-        return dailyTradeCount >= config.getMaxDailyTrades();
+        return tradeCount() >= config.getMaxDailyTrades();
     }
 
     @Override
     public void incrementDailyTradeCount() {
-        dailyTradeCount++;
+        int count = dailyTradeCount.incrementAndGet();
         RiskManagement config = getAccountConfig();
-        config.setDailyTradeCount(dailyTradeCount);
+        config.setDailyTradeCount(count);
+        invalidateAccountConfigCache();
         riskManagementRepository.save(config);
     }
 
@@ -527,14 +598,16 @@ public class RiskManagementServiceImpl implements RiskManagementService {
     public Double calculateAverageRRAchieved(int tradeDays) {
         if (simulatedTradingService == null) return null;
 
-        LocalDate endDate = LocalDate.now();
+        LocalDate endDate = LocalDate.now(IST_ZONE_ID);
         LocalDate startDate = endDate.minusDays(tradeDays);
         List<SimulatedTrade> trades = simulatedTradingService.getTradeHistory(startDate, endDate);
         if (trades == null || trades.isEmpty()) return 0.0;
 
-        // Filter only closed trades
+        // Filter only closed trades that have all data needed for RR calculation
         List<SimulatedTrade> closedTrades = trades.stream()
-                .filter(t -> t.getExitPrice() != null && t.getNetPnl() != null)
+                .filter(t -> t.getExitPrice() != null && t.getNetPnl() != null
+                        && t.getEntryPrice() != null && t.getStopLossPrice() != null
+                        && t.getQuantity() != null && t.getQuantity() > 0)
                 .toList();
         if (closedTrades.isEmpty()) return 0.0;
 
@@ -542,13 +615,13 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         int count = 0;
 
         for (SimulatedTrade trade : closedTrades) {
-            if (trade.getNetPnl() != null && trade.getEntryPrice() != null && trade.getExitPrice() != null) {
-                // Calculate rough RR
-                double entryExit = Math.abs(trade.getExitPrice() - trade.getEntryPrice());
-                if (entryExit > 0) {
-                    totalRR += trade.getNetPnl() / (entryExit * 25); // Approximate
-                    count++;
-                }
+            // Risk per unit = distance from entry to initial stop loss
+            double riskPerUnit = Math.abs(trade.getEntryPrice() - trade.getStopLossPrice());
+            if (riskPerUnit > 0) {
+                // Total risk in rupees = riskPerUnit * quantity
+                double totalRisk = riskPerUnit * trade.getQuantity();
+                totalRR += trade.getNetPnl() / totalRisk;
+                count++;
             }
         }
 
@@ -559,7 +632,7 @@ public class RiskManagementServiceImpl implements RiskManagementService {
     public Double calculateMaxDrawdown(int tradeDays) {
         if (simulatedTradingService == null) return null;
 
-        LocalDate endDate = LocalDate.now();
+        LocalDate endDate = LocalDate.now(IST_ZONE_ID);
         LocalDate startDate = endDate.minusDays(tradeDays);
         List<SimulatedTrade> trades = simulatedTradingService.getTradeHistory(startDate, endDate);
         if (trades == null || trades.isEmpty()) return 0.0;
@@ -593,7 +666,7 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         Double peak = config.getPeakAccountValue();
         if (peak == null || peak <= 0) return 0.0;
 
-        double currentValue = config.getAccountCapital() + dailyRealizedPnl + dailyUnrealizedPnl;
+        double currentValue = config.getAccountCapital() + totalDailyPnl();
         return ((peak - currentValue) / peak) * 100;
     }
 
@@ -730,7 +803,7 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         RiskManagement config = getAccountConfig();
 
         // Daily loss proximity (max -30)
-        double dailyLossUsed = Math.abs(Math.min(0, dailyRealizedPnl + dailyUnrealizedPnl));
+        double dailyLossUsed = Math.abs(Math.min(0, totalDailyPnl()));
         double dailyLossPercent = dailyLossUsed / config.getMaxDailyLossAmount() * 100;
         score -= Math.min(30, dailyLossPercent * 0.5);
 
@@ -740,7 +813,7 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         score -= Math.min(30, heatRatio * 0.3);
 
         // Trade count (max -20)
-        double tradeRatio = (double) dailyTradeCount / config.getMaxDailyTrades() * 100;
+        double tradeRatio = (double) tradeCount() / config.getMaxDailyTrades() * 100;
         score -= Math.min(20, tradeRatio * 0.2);
 
         // Current drawdown (max -20)
@@ -758,7 +831,6 @@ public class RiskManagementServiceImpl implements RiskManagementService {
 
         Map<String, Object> sizing = calculatePositionSizeForIOB(iob);
         Integer quantity = (Integer) sizing.get("calculatedQuantity");
-        Double riskAmount = (Double) sizing.get("actualRiskAmount");
 
         if (quantity == null || quantity <= 0) {
             return Map.of("approved", false, "error", "Cannot calculate position size");
@@ -819,7 +891,7 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         RiskManagement config = getAccountConfig();
 
         // Daily loss warning (>70% used)
-        double dailyLossUsed = Math.abs(Math.min(0, dailyRealizedPnl + dailyUnrealizedPnl));
+        double dailyLossUsed = Math.abs(Math.min(0, totalDailyPnl()));
         double dailyLossPercent = (dailyLossUsed / config.getMaxDailyLossAmount()) * 100;
         if (dailyLossPercent >= 70) {
             Map<String, Object> alert = new HashMap<>();
@@ -842,13 +914,14 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         }
 
         // Trade count warning
-        double tradePercent = ((double) dailyTradeCount / config.getMaxDailyTrades()) * 100;
+        int tc = tradeCount();
+        double tradePercent = ((double) tc / config.getMaxDailyTrades()) * 100;
         if (tradePercent >= 80) {
             Map<String, Object> alert = new HashMap<>();
             alert.put("type", "TRADE_LIMIT_WARNING");
             alert.put("severity", tradePercent >= 100 ? "CRITICAL" : "WARNING");
-            alert.put("message", String.format("Trade count at %d/%d", dailyTradeCount, config.getMaxDailyTrades()));
-            alert.put("value", dailyTradeCount);
+            alert.put("message", String.format("Trade count at %d/%d", tc, config.getMaxDailyTrades()));
+            alert.put("value", tc);
             alerts.add(alert);
         }
 
@@ -859,9 +932,9 @@ public class RiskManagementServiceImpl implements RiskManagementService {
 
     @Override
     public void resetDailyMetrics() {
-        dailyRealizedPnl = 0.0;
+        dailyRealizedPnl.reset();
         dailyUnrealizedPnl = 0.0;
-        dailyTradeCount = 0;
+        dailyTradeCount.set(0);
         openPositions.clear();
 
         RiskManagement config = getAccountConfig();
@@ -876,6 +949,7 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         config.setPortfolioHeatExceeded(false);
         config.setTradingAllowed(true);
 
+        invalidateAccountConfigCache();
         riskManagementRepository.save(config);
         logger.info("Daily risk metrics reset");
     }
@@ -885,7 +959,7 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         RiskManagement config = getAccountConfig();
 
         // Update peak account value if current is higher
-        double currentValue = config.getAccountCapital() + dailyRealizedPnl;
+        double currentValue = config.getAccountCapital() + realizedPnl();
         if (config.getPeakAccountValue() == null || currentValue > config.getPeakAccountValue()) {
             config.setPeakAccountValue(currentValue);
         }
@@ -896,8 +970,9 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         config.setMaxDrawdownPercent(calculateMaxDrawdown(30));
         config.setProfitFactor(calculateProfitFactor(30));
 
+        invalidateAccountConfigCache();
         riskManagementRepository.save(config);
-        logger.info("End of day risk processing completed. Daily P&L: {}", dailyRealizedPnl);
+        logger.info("End of day risk processing completed. Daily P&L: {}", realizedPnl());
     }
 
     @Override
@@ -909,7 +984,7 @@ public class RiskManagementServiceImpl implements RiskManagementService {
     // ==================== Helper Methods ====================
 
     private RiskManagement getOrCreateTodayConfig(Long instrumentToken) {
-        LocalDate today = LocalDate.now();
+        LocalDate today = LocalDate.now(IST_ZONE_ID);
 
         Optional<RiskManagement> existing = instrumentToken != null ?
                 riskManagementRepository.findByInstrumentTokenAndAnalysisDate(instrumentToken, today) :
@@ -922,19 +997,21 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         RiskManagement config = new RiskManagement();
         config.setInstrumentToken(instrumentToken);
         config.setAnalysisDate(today);
-        config.setAnalysisTimestamp(LocalDateTime.now());
+        config.setAnalysisTimestamp(LocalDateTime.now(IST_ZONE_ID));
         return config;
     }
 
     private void updateDailyPnlInConfig() {
         RiskManagement config = getAccountConfig();
-        config.setDailyRealizedPnl(dailyRealizedPnl);
+        double realized = realizedPnl();
+        config.setDailyRealizedPnl(realized);
         config.setDailyUnrealizedPnl(dailyUnrealizedPnl);
-        config.setDailyTotalPnl(dailyRealizedPnl + dailyUnrealizedPnl);
-        config.setDailyTradeCount(dailyTradeCount);
+        config.setDailyTotalPnl(realized + dailyUnrealizedPnl);
+        config.setDailyTradeCount(tradeCount());
         config.setDailyLimitReached(isDailyLossLimitReached());
 
         updateTradingAllowed(config);
+        invalidateAccountConfigCache();
         riskManagementRepository.save(config);
     }
 
@@ -952,6 +1029,7 @@ public class RiskManagementServiceImpl implements RiskManagementService {
         config.setRemainingRiskCapacity(getRemainingRiskCapacity());
 
         updateTradingAllowed(config);
+        invalidateAccountConfigCache();
         riskManagementRepository.save(config);
     }
 
@@ -972,8 +1050,7 @@ public class RiskManagementServiceImpl implements RiskManagementService {
     }
 
     private Integer getLotSize(Long instrumentToken) {
-        // NIFTY lot size is typically 25
-        if (NIFTY_INSTRUMENT_TOKEN.equals(instrumentToken)) return 25;
+        if (NIFTY_INSTRUMENT_TOKEN.equals(instrumentToken)) return NIFTY_LOT_SIZE;
         return 1;
     }
 

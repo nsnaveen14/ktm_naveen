@@ -370,6 +370,8 @@ export interface SimulatedTrade {
   optionType: string; // CE, PE
   strikePrice: number;
   underlyingPriceAtEntry: number;
+  underlyingStopLoss?: number;
+  iobZoneMidpoint?: number;
   quantity: number;
   lotSize: number;
   numLots: number;
@@ -459,6 +461,8 @@ export interface TradingSummary {
 
 export interface TradingConfig {
   autoTradingEnabled: boolean;
+  enableIobStrategy: boolean;
+  enableZeroHeroStrategy: boolean;
   numLots: number;
   quantity: number;
   targetPercent: number;
@@ -483,5 +487,74 @@ export interface TradeSignal {
   alignment?: string;
   confidence?: number;
   setupId?: number;
+}
+
+export interface OptionBuyingConfig {
+  enabled: boolean;
+  enableIob: boolean;
+  enableBrahmastra: boolean;
+  enableGainzAlgo?: boolean;
+  enableZeroHero: boolean;
+  numLots: number;
+  targetPercent: number;
+  stoplossPercent: number;
+  maxOpenTrades: number;
+  maxDailyLoss: number;
+  maxDailyTrades: number;
+  tradeStartTime: string;
+  tradeEndTime: string;
+  minSignalStrength: string;
+  exitOnReverseSignal: boolean;
+  requireConfluence?: boolean;
+  minConfluenceCount?: number;
+  maxVix?: number;
+  minPremium?: number;
+  maxPremium?: number;
+  trailingSlEnabled?: boolean;
+  trailingActivationPct?: number;
+  trailingTrailPct?: number;
+  zeroHeroMinScore?: number;
+}
+
+export interface OptionBuyingStatus {
+  enabled: boolean;
+  openTradesCount: number;
+  todayTrades: number;
+  todayPnl: number;
+}
+
+export interface OptionBuyingTrade {
+  id: number;
+  tradeId: string;
+  tradeDate: string;
+  signalSource: string;
+  signalType: string;
+  signalStrength?: string;
+  optionType: string;
+  strikePrice: number;
+  optionToken?: number;
+  optionSymbol?: string;
+  underlyingPriceAtEntry?: number;
+  underlyingStopLoss?: number;
+  iobZoneMidpoint?: number;
+  iobId?: number;
+  quantity: number;
+  lotSize: number;
+  numLots: number;
+  entryPrice: number;
+  entryTime: string;
+  entryReason?: string;
+  exitPrice?: number;
+  exitTime?: string;
+  exitReason?: string;
+  targetPrice: number;
+  stopLossPrice: number;
+  riskRewardRatio?: number;
+  premiumT1?: number;
+  premiumT2?: number;
+  premiumT3?: number;
+  netPnl?: number;
+  status: string;
+  zoneEntryLevel?: string;
 }
 

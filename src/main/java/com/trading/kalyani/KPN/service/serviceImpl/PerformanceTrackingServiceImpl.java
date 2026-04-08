@@ -32,6 +32,8 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
     @Autowired
     private PerformanceMetricsRepository metricsRepository;
 
+    private static final ZoneId IST_ZONE_ID = ZoneId.of("Asia/Kolkata");
+
     // Default transaction costs
     private static final double DEFAULT_BROKERAGE_PER_ORDER = 20.0;
     private static final double STT_RATE = 0.00025; // 0.025% on sell side
@@ -57,7 +59,7 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
                 .tradeDirection(iob.getTradeDirection())
                 .tradeType(tradeType != null ? tradeType : "SIMULATED")
                 .entryPrice(entryPrice)
-                .entryTime(LocalDateTime.now())
+                .entryTime(LocalDateTime.now(IST_ZONE_ID))
                 .entryReason(entryReason != null ? entryReason : "ZONE_TOUCH")
                 .stopLoss(iob.getStopLoss())
                 .target1(iob.getTarget1())
@@ -179,19 +181,23 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
     }
 
     private void calculateTransactionCosts(TradeResult trade) {
-        if (trade.getPositionValue() == null || trade.getQuantity() == null) return;
+        if (trade.getEntryPrice() == null || trade.getExitPrice() == null
+                || trade.getQuantity() == null) return;
 
-        double turnover = trade.getPositionValue() * 2; // Entry + Exit
+        double entryValue = trade.getEntryPrice() * trade.getQuantity();
+        double exitValue  = trade.getExitPrice()  * trade.getQuantity();
+        // Turnover = actual entry leg + actual exit leg (not 2× entry, which is wrong when entry ≠ exit)
+        double turnover = entryValue + exitValue;
 
-        // Brokerage (flat per order for F&O)
+        // Brokerage (flat per order for F&O — one order each side)
         trade.setBrokerage(DEFAULT_BROKERAGE_PER_ORDER * 2);
 
         // Calculate taxes and charges
-        double stt = trade.getPositionValue() * STT_RATE; // STT on sell side
+        double stt          = exitValue  * STT_RATE;          // STT on sell side only
         double exchangeCharge = turnover * EXCHANGE_TXN_CHARGE;
-        double sebiCharge = turnover * SEBI_CHARGE;
-        double stampDuty = trade.getPositionValue() * STAMP_DUTY;
-        double gst = (trade.getBrokerage() + exchangeCharge) * GST_RATE;
+        double sebiCharge   = turnover   * SEBI_CHARGE;
+        double stampDuty    = entryValue * STAMP_DUTY;         // Stamp duty on buy side only
+        double gst          = (trade.getBrokerage() + exchangeCharge) * GST_RATE;
 
         trade.setTaxes(stt + exchangeCharge + sebiCharge + stampDuty + gst);
     }
@@ -246,10 +252,10 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
         List<TradeResult> allTrades = tradeResultRepository.findAllClosedTrades();
         if (allTrades.isEmpty()) {
             logger.info("No closed trades found for metrics calculation");
-            return createEmptyMetrics("ALL_TIME", LocalDate.now());
+            return createEmptyMetrics("ALL_TIME", LocalDate.now(IST_ZONE_ID));
         }
 
-        PerformanceMetrics metrics = calculateMetricsFromTrades(allTrades, "ALL_TIME", LocalDate.now());
+        PerformanceMetrics metrics = calculateMetricsFromTrades(allTrades, "ALL_TIME", LocalDate.now(IST_ZONE_ID));
         metrics.setInstrumentToken(null); // All instruments
 
         metricsRepository.save(metrics);
@@ -306,15 +312,15 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
 
     private PerformanceMetrics calculateMetricsFromTrades(List<TradeResult> trades,
                                                           String periodType, LocalDate metricDate) {
-        PerformanceMetrics metrics = new PerformanceMetrics();
-        metrics.setMetricDate(metricDate);
-        metrics.setPeriodType(periodType);
-        metrics.setCalculationTimestamp(LocalDateTime.now());
-        metrics.setStrategyType("IOB");
-
         if (trades.isEmpty()) {
             return createEmptyMetrics(periodType, metricDate);
         }
+
+        PerformanceMetrics metrics = new PerformanceMetrics();
+        metrics.setMetricDate(metricDate);
+        metrics.setPeriodType(periodType);
+        metrics.setCalculationTimestamp(LocalDateTime.now(IST_ZONE_ID));
+        metrics.setStrategyType("IOB");
 
         // Basic counts
         metrics.setTotalTrades(trades.size());
@@ -432,13 +438,13 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
         calculateTargetMetrics(metrics, trades);
 
         // IOB-specific metrics
-        calculateIOBSpecificMetrics(metrics, trades, winners);
+        calculateIOBSpecificMetrics(metrics, trades);
 
         // Confidence analysis
         calculateConfidenceMetrics(metrics, trades, winners);
 
         // Time-based analysis
-        calculateTimeBasedMetrics(metrics, trades, winners);
+        calculateTimeBasedMetrics(metrics, trades);
 
         return metrics;
     }
@@ -534,8 +540,7 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
     }
 
     private void calculateIOBSpecificMetrics(PerformanceMetrics metrics,
-                                              List<TradeResult> trades,
-                                              List<TradeResult> winners) {
+                                              List<TradeResult> trades) {
         List<TradeResult> bullishTrades = trades.stream()
                 .filter(t -> "BULLISH_IOB".equals(t.getIobType()))
                 .toList();
@@ -611,8 +616,7 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
     }
 
     private void calculateTimeBasedMetrics(PerformanceMetrics metrics,
-                                            List<TradeResult> trades,
-                                            List<TradeResult> winners) {
+                                            List<TradeResult> trades) {
         LocalTime noonTime = LocalTime.of(12, 0);
 
         List<TradeResult> morningTrades = trades.stream()
@@ -644,7 +648,7 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
         PerformanceMetrics metrics = new PerformanceMetrics();
         metrics.setMetricDate(metricDate);
         metrics.setPeriodType(periodType);
-        metrics.setCalculationTimestamp(LocalDateTime.now());
+        metrics.setCalculationTimestamp(LocalDateTime.now(IST_ZONE_ID));
         metrics.setStrategyType("IOB");
         metrics.setTotalTrades(0);
         metrics.setWinningTrades(0);
@@ -716,7 +720,7 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
         }
         dashboard.put("quickStats", quickStats);
 
-        dashboard.put("timestamp", LocalDateTime.now());
+        dashboard.put("timestamp", LocalDateTime.now(IST_ZONE_ID));
         return dashboard;
     }
 
@@ -859,16 +863,21 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
         List<TradeResult> openTrades = getOpenTrades();
 
         for (TradeResult trade : openTrades) {
-            Double currentPrice = currentPrices.get(trade.getInstrumentToken());
-            if (currentPrice == null) continue;
+            try {
+                Double currentPrice = currentPrices.get(trade.getInstrumentToken());
+                if (currentPrice == null) continue;
 
-            Map<String, Object> status = checkTradeStatus(trade.getId(), currentPrice);
+                // Use already-loaded trade object to avoid N+1 re-fetch inside checkTradeStatus
+                Map<String, Object> status = checkTradeStatus(trade, currentPrice);
 
-            if (Boolean.TRUE.equals(status.get("shouldClose"))) {
-                String exitReason = (String) status.get("exitReason");
-                closeTradeResult(trade.getId(), currentPrice, LocalDateTime.now(), exitReason);
-            } else if (status.get("newTrailingStop") != null) {
-                updateTrailingStop(trade.getId(), (Double) status.get("newTrailingStop"));
+                if (Boolean.TRUE.equals(status.get("shouldClose"))) {
+                    String exitReason = (String) status.get("exitReason");
+                    closeTradeResult(trade.getId(), currentPrice, LocalDateTime.now(IST_ZONE_ID), exitReason);
+                } else if (status.get("newTrailingStop") != null) {
+                    updateTrailingStop(trade.getId(), (Double) status.get("newTrailingStop"));
+                }
+            } catch (Exception e) {
+                logger.error("Error processing trade outcome for trade {}: {}", trade.getId(), e.getMessage(), e);
             }
         }
     }
@@ -879,7 +888,10 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
         if (trade == null) {
             return Map.of("error", "Trade not found");
         }
+        return checkTradeStatus(trade, currentPrice);
+    }
 
+    private Map<String, Object> checkTradeStatus(TradeResult trade, Double currentPrice) {
         Map<String, Object> status = new HashMap<>();
         boolean isLong = "LONG".equals(trade.getTradeDirection());
 
@@ -910,11 +922,14 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
             boolean t2Hit = isLong ? currentPrice >= trade.getTarget2() :
                     currentPrice <= trade.getTarget2();
             if (t2Hit) {
-                // Could trail stop to entry or Target 1
+                // Trail SL to T1 (or entry if T1 not set) — return early so T1 check doesn't overwrite
                 Double newTrailingSL = trade.getTarget1() != null ? trade.getTarget1() :
                         trade.getEntryPrice();
                 status.put("target2Hit", true);
                 status.put("newTrailingStop", newTrailingSL);
+                status.put("shouldClose", false);
+                status.put("currentPrice", currentPrice);
+                return status;
             }
         }
 
@@ -922,7 +937,7 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
             boolean t1Hit = isLong ? currentPrice >= trade.getTarget1() :
                     currentPrice <= trade.getTarget1();
             if (t1Hit && trade.getTrailingStop() == null) {
-                // Move SL to entry (breakeven)
+                // Move SL to entry (breakeven) only if trailing stop not already active
                 status.put("target1Hit", true);
                 status.put("newTrailingStop", trade.getEntryPrice());
             }
@@ -944,7 +959,7 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
         logger.info("Running daily metrics calculation");
         try {
             // Calculate today's metrics
-            calculateDailyMetrics(LocalDate.now());
+            calculateDailyMetrics(LocalDate.now(IST_ZONE_ID));
 
             // Recalculate all-time metrics
             calculateAllTimeMetrics();
@@ -965,7 +980,7 @@ public class PerformanceTrackingServiceImpl implements PerformanceTrackingServic
 
         // Calculate daily metrics for last 30 days
         for (int i = 0; i < 30; i++) {
-            LocalDate date = LocalDate.now().minusDays(i);
+            LocalDate date = LocalDate.now(IST_ZONE_ID).minusDays(i);
             calculateDailyMetrics(date);
         }
 

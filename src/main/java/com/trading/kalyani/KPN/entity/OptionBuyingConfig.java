@@ -111,7 +111,7 @@ public class OptionBuyingConfig {
      * e.g. 50 = trailing SL kicks in once 50% of the move to target is covered.
      */
     @Column(name = "trailing_activation_pct")
-    private Double trailingActivationPct = 50.0;
+    private Double trailingActivationPct = 40.0;
 
     /**
      * Percentage of profit to trail the SL at.
@@ -119,4 +119,14 @@ public class OptionBuyingConfig {
      */
     @Column(name = "trailing_trail_pct")
     private Double trailingTrailPct = 50.0;
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // ZERO HERO — Minimum momentum score required to fire a trade
+    // 2 = any two indicators agree (MODERATE, default)
+    // 3 = all three must agree (STRONG, safer)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /** Minimum out of 3 momentum indicators that must agree for ZeroHero to fire. */
+    @Column(name = "zero_hero_min_score")
+    private Integer zeroHeroMinScore = 2;
 }

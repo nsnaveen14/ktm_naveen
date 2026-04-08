@@ -149,6 +149,8 @@
             <th>Type</th>
             <th>Strike</th>
             <th>Entry</th>
+            <th>IOB Midpoint</th>
+            <th>Underlying SL</th>
             <th>Target</th>
             <th>Stop Loss</th>
             <th>Qty</th>
@@ -166,7 +168,15 @@
               </mat-chip>
             </td>
             <td>{{trade.strikePrice}}</td>
-            <td>{{formatNumber(trade.entryPrice)}}</td>
+            <td>
+              <div class="entry-info-cell">
+                <span class="entry-underlying" *ngIf="trade.iobZoneMidpoint">• Midpoint: ₹{{formatNumber(trade.iobZoneMidpoint)}}</span>
+                <span class="entry-premium">₹{{formatNumber(trade.entryPrice)}}</span>
+                <span class="entry-nifty" *ngIf="trade.underlyingPriceAtEntry">Nifty: ₹{{formatNumber(trade.underlyingPriceAtEntry)}}</span>
+              </div>
+            </td>
+            <td>{{trade.iobZoneMidpoint ? formatNumber(trade.iobZoneMidpoint) : '—'}}</td>
+            <td class="negative">{{trade.underlyingStopLoss ? formatNumber(trade.underlyingStopLoss) : '—'}}</td>
             <td class="positive">{{formatNumber(trade.targetPrice)}}</td>
             <td class="negative">{{formatNumber(trade.stopLossPrice)}}</td>
             <td>{{trade.quantity}}</td>
@@ -214,6 +224,8 @@
               <th>Type</th>
               <th>Option</th>
               <th>Entry</th>
+              <th>IOB Midpoint</th>
+              <th>Underlying SL</th>
               <th>SL</th>
               <th>Target</th>
               <th>Exit</th>
@@ -237,7 +249,15 @@
                 </mat-chip>
               </td>
               <td>{{trade.optionType}} {{trade.strikePrice}}</td>
-              <td>{{formatNumber(trade.entryPrice)}}</td>
+              <td>
+                <div class="entry-info-cell">
+                  <span class="entry-underlying" *ngIf="trade.iobZoneMidpoint">• Midpoint: ₹{{formatNumber(trade.iobZoneMidpoint)}}</span>
+                  <span class="entry-premium">₹{{formatNumber(trade.entryPrice)}}</span>
+                  <span class="entry-nifty" *ngIf="trade.underlyingPriceAtEntry">Nifty: ₹{{formatNumber(trade.underlyingPriceAtEntry)}}</span>
+                </div>
+              </td>
+              <td>{{trade.iobZoneMidpoint ? formatNumber(trade.iobZoneMidpoint) : '-'}}</td>
+              <td class="negative">{{trade.underlyingStopLoss ? formatNumber(trade.underlyingStopLoss) : '-'}}</td>
               <td class="sl-value">{{trade.stopLossPrice ? formatNumber(trade.stopLossPrice) : '-'}}</td>
               <td class="target-value">{{trade.targetPrice ? formatNumber(trade.targetPrice) : '-'}}</td>
               <td class="exit-value">{{trade.exitPrice ? formatNumber(trade.exitPrice) : '-'}}</td>
@@ -281,6 +301,18 @@
     </mat-expansion-panel-header>
 
     <div class="config-content" *ngIf="tradingConfig && !isEditingConfig">
+      <!-- Strategy switches -->
+      <div class="strategy-switches">
+        <span class="strategy-label">Active Strategies:</span>
+        <mat-chip [class]="tradingConfig.enableIobStrategy ? 'chip-on' : 'chip-off'">
+          <mat-icon>{{tradingConfig.enableIobStrategy ? 'check_circle' : 'cancel'}}</mat-icon>
+          IOB
+        </mat-chip>
+        <mat-chip [class]="tradingConfig.enableZeroHeroStrategy ? 'chip-on' : 'chip-off'">
+          <mat-icon>{{tradingConfig.enableZeroHeroStrategy ? 'check_circle' : 'cancel'}}</mat-icon>
+          Zero Hero
+        </mat-chip>
+      </div>
       <div class="config-grid">
         <div class="config-item">
           <label>Number of Lots</label>
@@ -321,6 +353,16 @@
     </div>
 
     <div class="config-edit" *ngIf="isEditingConfig">
+      <!-- Strategy toggles -->
+      <div class="strategy-toggles">
+        <span class="strategy-label">Enable Strategies:</span>
+        <mat-slide-toggle [(ngModel)]="editConfig.enableIobStrategy" color="primary">
+          IOB (Internal Order Block)
+        </mat-slide-toggle>
+        <mat-slide-toggle [(ngModel)]="editConfig.enableZeroHeroStrategy" color="accent">
+          Zero Hero (Expiry Day)
+        </mat-slide-toggle>
+      </div>
       <div class="config-grid">
         <mat-form-field appearance="outline" class="config-input" floatLabel="always">
           <mat-label>Number of Lots</mat-label>

@@ -172,6 +172,30 @@
   text-transform: uppercase;
 }
 
+/* ── Entry info cell ─────────────────────────────────────────────────────── */
+.entry-info-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.entry-underlying {
+  font-size: 0.82rem;
+  color: #e0e0e0;
+  font-weight: 500;
+}
+
+.entry-premium {
+  font-size: 0.82rem;
+  color: #90caf9;
+  font-weight: 600;
+}
+
+.entry-nifty {
+  font-size: 0.72rem;
+  color: #b0bec5;
+}
+
 /* ── Option type chips ───────────────────────────────────────────────────── */
 .chip-ce {
   background: #1b5e20 !important;
@@ -301,23 +325,112 @@
 }
 
 /* ── Material overrides ──────────────────────────────────────────────────── */
-::ng-deep .ob-panel .mat-expansion-panel-header {
+
+/* Expansion panels */
+::ng-deep .ob-panel .mat-expansion-panel-header,
+::ng-deep .ob-panel .mat-expansion-panel-header:hover {
   background: #1e1e1e !important;
   color: #e0e0e0 !important;
 }
-
 ::ng-deep .ob-panel .mat-expansion-panel-body {
   background: #1e1e1e !important;
+  color: #e0e0e0 !important;
+}
+::ng-deep .ob-panel .mat-expansion-panel-header-title,
+::ng-deep .ob-panel .mat-expansion-panel-header-description,
+::ng-deep .ob-panel .mat-panel-title,
+::ng-deep .ob-panel .mat-panel-description {
+  color: #e0e0e0 !important;
+}
+::ng-deep .ob-panel .mat-expansion-indicator::after {
+  color: #e0e0e0 !important;
 }
 
-::ng-deep .ob-container .mat-form-field-outline {
-  color: #555 !important;
+/* Cards */
+::ng-deep .ob-card {
+  background: #1e1e1e !important;
+  color: #e0e0e0 !important;
+}
+::ng-deep .ob-card .mat-card-title,
+::ng-deep .ob-card .mat-mdc-card-title {
+  color: #e0e0e0 !important;
+}
+::ng-deep .ob-card .mat-card-content,
+::ng-deep .ob-card .mat-mdc-card-content {
+  color: #e0e0e0 !important;
 }
 
-::ng-deep .ob-container .mat-form-field-label {
+/* Form fields - outline border, label, input */
+::ng-deep .ob-container .mat-mdc-form-field .mdc-notched-outline__leading,
+::ng-deep .ob-container .mat-mdc-form-field .mdc-notched-outline__notch,
+::ng-deep .ob-container .mat-mdc-form-field .mdc-notched-outline__trailing {
+  border-color: #555 !important;
+}
+::ng-deep .ob-container .mat-mdc-form-field:hover .mdc-notched-outline__leading,
+::ng-deep .ob-container .mat-mdc-form-field:hover .mdc-notched-outline__notch,
+::ng-deep .ob-container .mat-mdc-form-field:hover .mdc-notched-outline__trailing {
+  border-color: #90caf9 !important;
+}
+::ng-deep .ob-container .mat-mdc-form-field .mdc-floating-label,
+::ng-deep .ob-container .mat-mdc-form-field label {
   color: #9e9e9e !important;
 }
-
-::ng-deep .ob-container .mat-input-element {
+::ng-deep .ob-container .mat-mdc-input-element,
+::ng-deep .ob-container .mdc-text-field__input {
   color: #e0e0e0 !important;
+  caret-color: #90caf9 !important;
+}
+::ng-deep .ob-container .mat-mdc-form-field .mat-mdc-form-field-hint {
+  color: #757575 !important;
+}
+::ng-deep .ob-container .mdc-text-field--outlined {
+  background: #2a2a2a !important;
+}
+
+/* Select */
+::ng-deep .ob-container .mat-mdc-select-value-text,
+::ng-deep .ob-container .mat-mdc-select-arrow {
+  color: #e0e0e0 !important;
+}
+
+/* Slide toggles labels */
+::ng-deep .ob-container .mat-slide-toggle-content,
+::ng-deep .ob-container .mdc-switch + label {
+  color: #e0e0e0 !important;
+}
+
+/* Divider */
+::ng-deep .ob-container mat-divider {
+  border-top-color: #333 !important;
+}
+
+/* Mat chips inside container */
+::ng-deep .ob-container .mat-mdc-chip:not(.chip-active):not(.chip-inactive):not(.chip-ce):not(.chip-pe):not(.count-chip):not(.count-chip-sm) {
+  background: #2a2a2a !important;
+  color: #e0e0e0 !important;
+}
+
+/* Icon buttons */
+::ng-deep .ob-container .mat-icon-button .mat-icon,
+::ng-deep .ob-container .mat-mdc-icon-button .mat-icon {
+  color: #bdbdbd !important;
+}
+
+/* Table rows background */
+::ng-deep .ob-container .mat-mdc-table {
+  background: transparent !important;
+}
+::ng-deep .ob-container .mat-mdc-header-row {
+  background: transparent !important;
+}
+::ng-deep .ob-container .mat-mdc-row {
+  background: transparent !important;
+}
+::ng-deep .ob-container .mat-mdc-header-cell {
+  color: #90caf9 !important;
+  border-bottom-color: #333 !important;
+}
+::ng-deep .ob-container .mat-mdc-cell {
+  color: #e0e0e0 !important;
+  border-bottom-color: #2a2a2a !important;
 }

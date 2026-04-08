@@ -320,7 +320,6 @@ export class PerformanceChartsComponent implements OnInit, OnDestroy {
     switch (source) {
       case 'TRADE_SETUP': return '#FF9800';
       case 'EMA_CROSSOVER': return '#2196F3';
-      case 'LIQUIDITY_SWEEP': return '#00BCD4';
       case 'IOB_SIGNAL': return '#4CAF50';  // Green for IOB signals
       case 'MANUAL': return '#607D8B';
       default: return '#9E9E9E';

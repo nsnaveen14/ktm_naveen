@@ -26,7 +26,7 @@ import static com.trading.kalyani.KPN.constants.ApplicationConstants.*;
 
 /**
  * Option Buying Strategy — unified ATM CE/PE buyer driven by
- * IOB, Brahmastra, GainzAlgo and ZeroHero signals.
+ * IOB, Brahmastra and ZeroHero signals.
  *
  * Optimizations applied:
  *  1. Signal Confluence — only trade when N sources agree on the same direction.
@@ -41,7 +41,6 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
     // ── Signal source tags ────────────────────────────────────────────────────
     static final String SRC_IOB        = "OPT_BUY_IOB";
     static final String SRC_BRAHMASTRA = "OPT_BUY_BRAHMASTRA";
-    static final String SRC_GAINZ      = "OPT_BUY_GAINZ_ALGO";
     static final String SRC_ZERO_HERO  = "OPT_BUY_ZERO_HERO";
     private static final String OPT_BUY_PREFIX = "OPT_BUY";
 
@@ -71,10 +70,6 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
 
     @Lazy
     @Autowired(required = false)
-    private GainzAlgoSignalService gainzAlgoSignalService;
-
-    @Lazy
-    @Autowired(required = false)
     private BrahmastraService brahmastraService;
 
     @Autowired(required = false)
@@ -86,6 +81,12 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
 
     @Autowired(required = false)
     private SimpMessagingTemplate messagingTemplate;
+
+    @Autowired(required = false)
+    private TelegramNotificationService telegramNotificationService;
+
+    // Alert cooldown: tradeId → sent flag (prevents duplicate alerts on re-entry)
+    private final Map<String, Boolean> telegramAlertSent = new ConcurrentHashMap<>();
 
     // ═════════════════════════════════════════════════════════════════════════
     // Config CRUD
@@ -103,7 +104,9 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
                     // vix/premium
                     20.0, 10.0, 300.0,
                     // trailing SL
-                    false, 50.0, 50.0);
+                    false, 50.0, 50.0,
+                    // zero hero min score
+                    2);
             return configRepository.save(d);
         });
     }
@@ -197,7 +200,6 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
 
         // ── Collect confluence candidates (IOB + Brahmastra + GainzAlgo) ──────
         List<SignalCandidate> candidates = new ArrayList<>();
-        if (config.isEnableGainzAlgo())  collectGainzAlgo(candidates, config);
         if (config.isEnableBrahmastra()) collectBrahmastra(candidates, config);
         if (config.isEnableIob())        collectIob(candidates, liveData, config);
 
@@ -211,25 +213,6 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
     }
 
     // ─── Signal collectors (return candidates, don't place trades) ───────────
-
-    private void collectGainzAlgo(List<SignalCandidate> candidates, OptionBuyingConfig config) {
-        if (gainzAlgoSignalService == null) return;
-        try {
-            Map<String, Object> signal = gainzAlgoSignalService.checkSignal();
-            if (signal == null || !Boolean.TRUE.equals(signal.get("hasSignal"))) return;
-
-            String direction = (String) signal.get("signalType");
-            String strength  = signal.get("signalStrength") != null
-                    ? (String) signal.get("signalStrength") : "MODERATE";
-            if (direction == null) return;
-            if (!isStrengthSufficient(strength, config.getMinSignalStrength())) return;
-
-            candidates.add(new SignalCandidate(SRC_GAINZ, direction, strength));
-            logger.debug("OPT-BUY: GainzAlgo candidate {} ({})", direction, strength);
-        } catch (Exception e) {
-            logger.error("OPT-BUY: GainzAlgo collect error: {}", e.getMessage());
-        }
-    }
 
     private void collectBrahmastra(List<SignalCandidate> candidates, OptionBuyingConfig config) {
         if (brahmastraService == null) return;
@@ -268,13 +251,15 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
 
             for (InternalOrderBlock iob : freshIOBs) {
                 if (iob.getZoneLow() == null || iob.getZoneHigh() == null) continue;
-                double mid = (iob.getZoneLow() + iob.getZoneHigh()) / 2.0;
-                double tol = mid * 0.005;
-                boolean near = niftyLTP >= (iob.getZoneLow() - tol)
-                            && niftyLTP <= (iob.getZoneHigh() + tol);
+                // Price must be strictly inside the zone — entry only when price re-enters
+                boolean near = niftyLTP >= iob.getZoneLow() && niftyLTP <= iob.getZoneHigh();
                 if (!near) continue;
 
-                String direction = "BULLISH_IOB".equals(iob.getObType()) ? "BUY" : "SELL";
+                String direction;
+                if ("BULLISH_IOB".equals(iob.getObType()))       direction = "BUY";
+                else if ("BEARISH_IOB".equals(iob.getObType()))  direction = "SELL";
+                else continue; // skip unknown/invalid types
+
                 candidates.add(new SignalCandidate(SRC_IOB, direction, "MODERATE"));
                 logger.debug("OPT-BUY: IOB candidate {} ({})", direction, iob.getObType());
                 break; // one IOB candidate per cycle
@@ -312,9 +297,9 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
             return;
         }
 
-        // Cooldown check — use composite key of all agreeing sources
-        String cooldownKey = bestDir + "_" + bestCount;
-        if (!isCooldownPassed("CONFLUENCE_" + cooldownKey)) return;
+        // Cooldown check — per direction only (count must not bypass cooldown)
+        String cooldownKey = "CONFLUENCE_" + bestDir;
+        if (!isCooldownPassed(cooldownKey)) return;
 
         // Build a combined source label
         List<SignalCandidate> agreed = byDirection.get(bestDir);
@@ -334,8 +319,11 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
             logger.info("OPT-BUY: {} sources agree on {} - placing trade", bestCount, bestDir);
         }
 
-        placeTrade(liveData, config, source, bestDir, strength, optionType, null, null, null);
-        cooldowns.put("CONFLUENCE_" + cooldownKey, LocalDateTime.now());
+        boolean tradePlaced = placeTrade(liveData, config, source, bestDir, strength, optionType, null, null, null);
+        if (!tradePlaced) {
+            logger.warn("OPT-BUY: confluence signal {} met but trade placement failed (data or premium filters)", bestDir);
+        }
+        cooldowns.put(cooldownKey, LocalDateTime.now());
     }
 
     // ─── ZeroHero (independent) ───────────────────────────────────────────────
@@ -343,7 +331,8 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
     private void checkZeroHero(Map<String, Object> liveData, OptionBuyingConfig config) {
         if (zeroHeroSignalService == null) return;
         try {
-            Map<String, Object> signal = zeroHeroSignalService.checkSignal(liveData);
+            int minScore = config.getZeroHeroMinScore() != null ? config.getZeroHeroMinScore() : 2;
+            Map<String, Object> signal = zeroHeroSignalService.checkSignal(liveData, minScore);
             if (signal == null || !Boolean.TRUE.equals(signal.get("hasSignal"))) return;
 
             String direction   = (String) signal.get("signalType");
@@ -367,8 +356,11 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
                 return;
             }
 
-            placeTrade(liveData, config, SRC_ZERO_HERO, direction, strength, optionType,
+            boolean tradePlaced = placeTrade(liveData, config, SRC_ZERO_HERO, direction, strength, optionType,
                     premium, target, sl);
+            if (tradePlaced) {
+                sendZeroHeroSignalAlert(signal, premium, target, sl);
+            }
         } catch (Exception e) {
             logger.error("OPT-BUY: ZeroHero check error: {}", e.getMessage(), e);
         }
@@ -376,7 +368,7 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
 
     // ─── Trade placement ──────────────────────────────────────────────────────
 
-    private void placeTrade(Map<String, Object> liveData, OptionBuyingConfig config,
+    private boolean placeTrade(Map<String, Object> liveData, OptionBuyingConfig config,
                             String source, String signalType, String signalStrength,
                             String optionType,
                             Double overrideEntryPrice, Double overrideTarget, Double overrideSL) {
@@ -392,7 +384,7 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
 
         if (entryPrice == null || entryPrice <= 0 || optionToken == null) {
             logger.debug("OPT-BUY: missing ATM data for {} - skipping", source);
-            return;
+            return false;
         }
 
         // ── OPTIMIZATION 2: Premium range filter ──────────────────────────────
@@ -400,7 +392,7 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
             logger.info("OPT-BUY: premium {} outside range [{}-{}] - skipping {}",
                     String.format("%.1f", entryPrice),
                     config.getMinPremium(), config.getMaxPremium(), source);
-            return;
+            return false;
         }
 
         int    quantity    = config.getNumLots() * NIFTY_LOT_SIZE;
@@ -434,6 +426,19 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
         trade.setStopLossPrice(stopLoss);
         trade.setStatus(TRADE_STATUS_OPEN);
         trade.setVixAtEntry(toDouble(liveData, "vixValue"));
+        trade.setMarketTrend("BUY".equals(signalType) ? "BULLISH" : "BEARISH");
+
+        // Risk/reward ratio
+        double risk = entryPrice - stopLoss;
+        if (risk > 0) {
+            trade.setRiskRewardRatio((targetPrice - entryPrice) / risk);
+        }
+
+        // Premium milestone targets (30% / 60% / 100% of move to target)
+        double moveToTarget = targetPrice - entryPrice;
+        trade.setPremiumT1(entryPrice + moveToTarget * 0.30);
+        trade.setPremiumT2(entryPrice + moveToTarget * 0.60);
+        trade.setPremiumT3(targetPrice);
 
         tradeRepository.save(trade);
 
@@ -458,8 +463,11 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
                 "stopLoss",    stopLoss
         ));
 
+        sendTradeOpenedAlert(trade);
+
         logger.info("OPT-BUY trade: {} {} {} entry={} target={} SL={} lots={}",
                 source, signalType, optionSymbol, entryPrice, targetPrice, stopLoss, config.getNumLots());
+        return true;
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -542,6 +550,8 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
                 "netPnl",     trade.getNetPnl() != null ? trade.getNetPnl() : 0.0
         ));
 
+        sendTradeClosedAlert(trade);
+
         logger.info("OPT-BUY exit: {} {} reason={} exitPrice={} netPnl={}",
                 trade.getTradeId(), trade.getOptionSymbol(), exitReason, exitPrice, trade.getNetPnl());
     }
@@ -559,8 +569,8 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
 
     @Override
     public List<SimulatedTrade> getTodayTrades() {
-        LocalDateTime start = LocalDate.now().atStartOfDay();
-        LocalDateTime end   = start.plusDays(1);
+        LocalDateTime start = LocalDate.now(IST).atStartOfDay();
+        LocalDateTime end   = LocalDate.now(IST).plusDays(1).atStartOfDay();
         return tradeRepository.findTodaysTrades(start, end).stream()
                 .filter(t -> t.getSignalSource() != null && t.getSignalSource().startsWith(OPT_BUY_PREFIX))
                 .collect(Collectors.toList());
@@ -591,9 +601,150 @@ public class OptionBuyingServiceImpl implements OptionBuyingService {
      */
     private boolean isPremiumInRange(Double premium, OptionBuyingConfig config) {
         if (premium == null) return false;
-        if (config.getMinPremium() > 0 && premium < config.getMinPremium()) return false;
-        if (config.getMaxPremium() > 0 && premium > config.getMaxPremium()) return false;
+        if (config.getMinPremium() != null && config.getMinPremium() > 0 && premium < config.getMinPremium()) return false;
+        if (config.getMaxPremium() != null && config.getMaxPremium() > 0 && premium > config.getMaxPremium()) return false;
         return true;
+    }
+
+    // ─── Telegram alerts ──────────────────────────────────────────────────────
+
+    /** Alert fired once per signal event (before trade placement). ZeroHero only. */
+    private void sendZeroHeroSignalAlert(Map<String, Object> signal, Double premium,
+                                         Double target, Double sl) {
+        if (telegramNotificationService == null) return;
+        try {
+            String direction  = (String) signal.get("signalType");
+            String optionType = (String) signal.get("optionType");
+            Integer strike    = signal.get("strikePrice") instanceof Number
+                    ? ((Number) signal.get("strikePrice")).intValue() : null;
+            Integer score     = signal.get("momentumScore") instanceof Number
+                    ? ((Number) signal.get("momentumScore")).intValue() : null;
+            Object ema9Obj  = signal.get("ema9");
+            Object ema21Obj = signal.get("ema21");
+            Object rsiObj   = signal.get("rsi");
+            Object confObj  = signal.get("confidence");
+
+            String emoji = "BUY".equals(direction) ? "🟢" : "🔴";
+            StringBuilder msg = new StringBuilder();
+            msg.append(String.format("%s *ZeroHero Signal — %s %s*\n", emoji, direction, optionType));
+            msg.append(String.format("🎯 Strike: *%s*\n", strike != null ? strike : "ATM"));
+            msg.append(String.format("💰 Premium: *₹%.2f*\n", premium != null ? premium : 0.0));
+            msg.append(String.format("🎯 Target: ₹%.2f  (%.0f×)\n",
+                    target != null ? target : 0.0,
+                    premium != null && premium > 0 && target != null ? target / premium : 0.0));
+            msg.append(String.format("🛡️ Stop Loss: ₹%.2f\n", sl != null ? sl : 0.0));
+            msg.append("\n📊 *Momentum Indicators*\n");
+            msg.append(String.format("• Score: *%s/3*\n", score != null ? score : "?"));
+            if (ema9Obj instanceof Number && ema21Obj instanceof Number) {
+                double e9  = ((Number) ema9Obj).doubleValue();
+                double e21 = ((Number) ema21Obj).doubleValue();
+                msg.append(String.format("• EMA9: %.2f  EMA21: %.2f  %s\n",
+                        e9, e21, e9 > e21 ? "↑ Bullish" : "↓ Bearish"));
+            }
+            if (rsiObj instanceof Number) {
+                double rsi = ((Number) rsiObj).doubleValue();
+                msg.append(String.format("• RSI: %.1f  %s\n",
+                        rsi, rsi > 55 ? "↑ Bull" : rsi < 45 ? "↓ Bear" : "Neutral"));
+            }
+            if (confObj instanceof Number) {
+                msg.append(String.format("💪 Confidence: *%.0f%%*\n", ((Number) confObj).doubleValue()));
+            }
+            msg.append("⚡ *Expiry day — ZeroHero window active*");
+
+            Map<String, Object> tradeData = new HashMap<>();
+            tradeData.put("source",     SRC_ZERO_HERO);
+            tradeData.put("direction",  direction);
+            tradeData.put("optionType", optionType);
+            tradeData.put("premium",    premium);
+            tradeData.put("score",      score);
+
+            telegramNotificationService.sendTradeAlert("🎯 ZERO HERO SIGNAL", msg.toString(), tradeData);
+        } catch (Exception e) {
+            logger.warn("OPT-BUY: ZeroHero Telegram signal alert failed: {}", e.getMessage());
+        }
+    }
+
+    /** Alert fired on every trade opened (all sources). */
+    private void sendTradeOpenedAlert(SimulatedTrade trade) {
+        if (telegramNotificationService == null) return;
+        // Deduplicate: send only once per trade ID
+        if (telegramAlertSent.putIfAbsent(trade.getTradeId(), Boolean.TRUE) != null) return;
+        try {
+            boolean isCE = "CE".equals(trade.getOptionType());
+            String emoji = isCE ? "🟢" : "🔴";
+            String source = getSourceLabel(trade.getSignalSource());
+
+            StringBuilder msg = new StringBuilder();
+            msg.append(String.format("%s *OPT-BUY TRADE OPENED*\n", emoji));
+            msg.append(String.format("📌 Source: *%s*\n", source));
+            msg.append(String.format("🎯 Symbol: *%s*  [%s]\n",
+                    trade.getOptionSymbol() != null ? trade.getOptionSymbol() : "—",
+                    trade.getOptionType()));
+            msg.append(String.format("💰 Entry Premium: *₹%.2f*\n",
+                    trade.getEntryPrice() != null ? trade.getEntryPrice() : 0.0));
+            msg.append(String.format("🎯 Target: ₹%.2f\n",
+                    trade.getTargetPrice() != null ? trade.getTargetPrice() : 0.0));
+            msg.append(String.format("🛡️ Stop Loss: ₹%.2f\n",
+                    trade.getStopLossPrice() != null ? trade.getStopLossPrice() : 0.0));
+            msg.append(String.format("📦 Qty: %d lots × %d = %d\n",
+                    trade.getNumLots() != null ? trade.getNumLots() : 0,
+                    trade.getLotSize() != null ? trade.getLotSize() : 65,
+                    trade.getQuantity() != null ? trade.getQuantity() : 0));
+            if (trade.getUnderlyingPriceAtEntry() != null) {
+                msg.append(String.format("📈 NIFTY @ ₹%.2f\n", trade.getUnderlyingPriceAtEntry()));
+            }
+
+            Map<String, Object> tradeData = new HashMap<>();
+            tradeData.put("tradeId",   trade.getTradeId());
+            tradeData.put("symbol",    trade.getOptionSymbol());
+            tradeData.put("source",    trade.getSignalSource());
+            tradeData.put("entryPrice", trade.getEntryPrice());
+
+            telegramNotificationService.sendTradeAlert("📥 OPT-BUY OPENED", msg.toString(), tradeData);
+        } catch (Exception e) {
+            logger.warn("OPT-BUY: trade-open Telegram alert failed: {}", e.getMessage());
+        }
+    }
+
+    /** Alert fired on every trade closed. */
+    private void sendTradeClosedAlert(SimulatedTrade trade) {
+        if (telegramNotificationService == null) return;
+        try {
+            double pnl = trade.getNetPnl() != null ? trade.getNetPnl() : 0.0;
+            String emoji = pnl >= 0 ? "✅" : "❌";
+            String pnlStr = (pnl >= 0 ? "+" : "") + String.format("₹%.0f", pnl);
+
+            StringBuilder msg = new StringBuilder();
+            msg.append(String.format("%s *OPT-BUY TRADE CLOSED*  %s\n", emoji, pnlStr));
+            msg.append(String.format("📌 Symbol: *%s*\n",
+                    trade.getOptionSymbol() != null ? trade.getOptionSymbol() : "—"));
+            msg.append(String.format("💰 Entry: ₹%.2f → Exit: ₹%.2f\n",
+                    trade.getEntryPrice() != null ? trade.getEntryPrice() : 0.0,
+                    trade.getExitPrice() != null ? trade.getExitPrice() : 0.0));
+            msg.append(String.format("🚪 Exit Reason: *%s*\n", trade.getExitReason()));
+            msg.append(String.format("📦 Qty: %d\n", trade.getQuantity() != null ? trade.getQuantity() : 0));
+            msg.append(String.format("💵 Net P&L: *%s*", pnlStr));
+
+            Map<String, Object> tradeData = new HashMap<>();
+            tradeData.put("tradeId",    trade.getTradeId());
+            tradeData.put("symbol",     trade.getOptionSymbol());
+            tradeData.put("exitReason", trade.getExitReason());
+            tradeData.put("netPnl",     pnl);
+
+            telegramNotificationService.sendTradeAlert(
+                    pnl >= 0 ? "✅ OPT-BUY PROFIT" : "❌ OPT-BUY LOSS",
+                    msg.toString(), tradeData);
+
+            // Clean up dedup map entry after trade is closed
+            telegramAlertSent.remove(trade.getTradeId());
+        } catch (Exception e) {
+            logger.warn("OPT-BUY: trade-close Telegram alert failed: {}", e.getMessage());
+        }
+    }
+
+    private String getSourceLabel(String source) {
+        if (source == null) return "";
+        return source.replace("OPT_BUY_", "").replace("_", " ");
     }
 
     private void broadcastEvent(String event, Map<String, Object> payload) {

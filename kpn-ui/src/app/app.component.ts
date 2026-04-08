@@ -24,12 +24,13 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { LiquidityAnalysisComponent } from './components/liquidity-analysis/liquidity-analysis.component';
 import { OrderBlocksContainerComponent } from './components/order-blocks-container/order-blocks-container.component';
+import { OptionBuyingComponent } from './components/option-buying/option-buying.component';
 
 @Component({
   selector: 'app-root',
   imports: [CommonModule, RouterOutlet, AppHeaderComponent, MatButtonModule, MatTabsModule, MultiSegmentsComponent, SettingsComponent, AnalyticsComponent, TradingComponent,
     MatCardModule, MatIconModule, MatChipsModule, MatTooltipModule, MatDividerModule, MatTableModule, MatInputModule, MatFormFieldModule, MatSlideToggleModule, MatProgressSpinnerModule, MatExpansionModule, MatBadgeModule, MatSelectModule, MatCheckboxModule
-  , LiquidityAnalysisComponent, OrderBlocksContainerComponent
+  , LiquidityAnalysisComponent, OrderBlocksContainerComponent, OptionBuyingComponent
   ],
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.css'],

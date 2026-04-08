@@ -251,6 +251,14 @@ export interface IOBBacktestResult {
   totalPnl: number;
   averageRR: number;
   totalPointsCaptured: number;
+  profitFactor?: number;
+  maxDrawdown?: number;
+  maxDrawdownPercent?: number;
+  expectancy?: number;
+  avgWin?: number;
+  avgLoss?: number;
+  maxWinStreak?: number;
+  maxLossStreak?: number;
   trades: IOBTradeResult[];
 }
 

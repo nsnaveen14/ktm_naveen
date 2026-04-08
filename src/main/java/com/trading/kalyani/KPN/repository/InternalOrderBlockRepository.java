@@ -101,7 +101,7 @@ public interface InternalOrderBlockRepository extends JpaRepository<InternalOrde
     @Transactional
     @Query("UPDATE InternalOrderBlock iob SET iob.status = 'EXPIRED' " +
             "WHERE iob.status = 'FRESH' AND iob.detectionTimestamp < :cutoffTime")
-    void expireOldIOBs(@Param("cutoffTime") LocalDateTime cutoffTime);
+    int expireOldIOBs(@Param("cutoffTime") LocalDateTime cutoffTime);
 
     /**
      * Find IOB by unique signature (for deduplication)

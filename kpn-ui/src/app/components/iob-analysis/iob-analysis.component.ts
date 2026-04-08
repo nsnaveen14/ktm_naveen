@@ -245,20 +245,13 @@ export class IobAnalysisComponent implements OnInit, OnDestroy {
       activeIOBs = [...(data.freshBullishIOBs || []), ...(data.freshBearishIOBs || [])];
     }
     const mitigatedIOBs: InternalOrderBlock[] = data.mitigatedIOBs || [];
-    // Always include traded IOBs (tradeTaken=true) even when STOPPED/COMPLETED
-    const completedIOBs: InternalOrderBlock[] = (data.completedIOBs || []).filter(
-      (iob: any) => this.selectedStatuses.some(s => ['STOPPED','COMPLETED','EXPIRED'].includes(s))
-                    || iob.tradeTaken === true
-    );
+    const completedIOBs: InternalOrderBlock[] = data.completedIOBs || [];
     const allIOBs = [...activeIOBs, ...mitigatedIOBs, ...completedIOBs];
 
-    // Apply status filter — always pass through tradeTaken=true IOBs regardless of status filter
+    // Apply status filter — show only selected statuses
     const filtered = this.selectedStatuses.length === 0
       ? allIOBs
-      : allIOBs.filter(iob =>
-          this.selectedStatuses.includes((iob as any).status)
-          || (iob as any).tradeTaken === true
-        );
+      : allIOBs.filter(iob => this.selectedStatuses.includes((iob as any).status));
 
     // Sort by OB Candle Time (descending - latest first)
     return filtered.sort((a, b) => {
@@ -274,8 +267,10 @@ export class IobAnalysisComponent implements OnInit, OnDestroy {
   }
 
   // Called when status filter selection changes
-  onStatusFilterChange(): void {
+  onStatusFilterChange(statuses: string[]): void {
+    this.selectedStatuses = statuses;
     this.updateDisplayedIOBs();
+    this.cdr.detectChanges();
   }
 
   // Get active IOB count

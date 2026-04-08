@@ -127,6 +127,25 @@ public class ApplicationConstants {
 
     public static final String COMMA = ",";
     public static final String DASH = "-";
+
+    // ── AutoTrading: entry types ────────────────────────────────────────────
+    public static final String ENTRY_TYPE_ZONE_TOUCH          = "ZONE_TOUCH";
+    public static final String ENTRY_TYPE_ZONE_MIDPOINT       = "ZONE_MIDPOINT";
+    public static final String ENTRY_TYPE_CONFIRMATION_CANDLE = "CONFIRMATION_CANDLE";
+
+    // ── AutoTrading: trailing SL triggers ──────────────────────────────────
+    public static final String TRAILING_SL_TRIGGER_TARGET_1  = "TARGET_1";
+    public static final String TRAILING_SL_TRIGGER_BREAKEVEN = "BREAKEVEN";
+    public static final String TRAILING_SL_TRIGGER_POINTS    = "POINTS";
+
+    // ── AutoTrading: profit / exit targets ─────────────────────────────────
+    public static final String TRADE_TARGET_1 = "TARGET_1";
+    public static final String TRADE_TARGET_2 = "TARGET_2";
+    public static final String TRADE_TARGET_3 = "TARGET_3";
+
+    // ── AutoTrading: product types ─────────────────────────────────────────
+    public static final String PRODUCT_TYPE_MIS  = "MIS";
+    public static final String PRODUCT_TYPE_NRML = "NRML";
     public static final String EMPTY = "";
     public static final String SPACE = " ";
     public static final String SLASH = "/";

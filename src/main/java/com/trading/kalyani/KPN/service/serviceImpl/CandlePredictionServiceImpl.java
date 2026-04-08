@@ -3412,6 +3412,77 @@ public class CandlePredictionServiceImpl implements CandlePredictionService {
         tickData.put("straddlePremium", atmCELTP + atmPELTP);
         tickData.put("syntheticFuture", niftyLTP + cePeDiff);
         tickData.put("sentiment", cePeDiff > 10 ? "BULLISH" : cePeDiff < -10 ? "BEARISH" : "NEUTRAL");
+
+        // Populate OTM CE/PE LTPs for ZeroHero strategy during its entry window
+        populateOtmOptions(tickData, atmStrike, ticker);
+    }
+
+    /**
+     * Populates OTM+1 and OTM+2 CE/PE option LTPs into tickData for the ZeroHero strategy.
+     * Keys: otmCE_{strike}_LTP, otmPE_{strike}_LTP (e.g. otmCE_23300_LTP).
+     * Only runs on Tuesday between 14:25 and 15:15 IST to avoid unnecessary subscriptions
+     * during the rest of the trading day.
+     */
+    private void populateOtmOptions(Map<String, Object> tickData, int atmStrike,
+                                    com.trading.kalyani.KPN.utilities.KiteTickerProvider ticker) {
+        // Guard: ZeroHero fires on Tuesday (NIFTY weekly expiry) between 14:30–15:10.
+        // Subscribe from 14:25 so tokens are warm before the window opens.
+        LocalTime now = LocalTime.now(ZoneId.of("Asia/Kolkata"));
+        boolean isTuesday = LocalDate.now(ZoneId.of("Asia/Kolkata")).getDayOfWeek() == DayOfWeek.TUESDAY;
+        if (!isTuesday || now.isBefore(LocalTime.of(14, 25)) || now.isAfter(LocalTime.of(15, 15))) {
+            return;
+        }
+
+        // OTM+1 and OTM+2 CE strikes (above ATM), OTM+1 and OTM+2 PE strikes (below ATM)
+        int[] ceStrikes = { atmStrike + NIFTY_STRIKE_GAP, atmStrike + NIFTY_STRIKE_GAP * 2 };
+        int[] peStrikes = { atmStrike - NIFTY_STRIKE_GAP, atmStrike - NIFTY_STRIKE_GAP * 2 };
+
+        for (int strike : ceStrikes) {
+            resolveAndPopulateOtmLTP(tickData, ticker, strike, "CE");
+        }
+        for (int strike : peStrikes) {
+            resolveAndPopulateOtmLTP(tickData, ticker, strike, "PE");
+        }
+    }
+
+    /** Resolves the nearest-expiry instrument for the given strike + type, subscribes if needed, writes LTP. */
+    private void resolveAndPopulateOtmLTP(Map<String, Object> tickData,
+                                           com.trading.kalyani.KPN.utilities.KiteTickerProvider ticker,
+                                           int strike, String optionType) {
+        try {
+            List<InstrumentEntity> instruments = instrumentRepository
+                    .findNearestExpiryInstrumentFromStrikePrice(String.valueOf(strike));
+            if (instruments == null || instruments.isEmpty()) {
+                logger.debug("ZeroHero OTM: no instrument found for {} strike {}", optionType, strike);
+                return;
+            }
+
+            for (InstrumentEntity inst : instruments) {
+                if (inst.getInstrument() == null) continue;
+                String instType = inst.getInstrument().getInstrument_type();
+                if (!optionType.equals(instType)) continue;
+
+                Long token = inst.getInstrument().getInstrument_token();
+                String symbol = inst.getInstrument().getTradingsymbol();
+                if (token == null) continue;
+
+                Tick tick = ticker.tickerMapForJob.get(token);
+                if (tick == null) {
+                    ArrayList<Long> tokens = new ArrayList<>();
+                    tokens.add(token);
+                    ticker.subscribeTokenForJob(tokens);
+                    logger.info("ZeroHero OTM: {} {} ({}) subscribed — LTP on next tick", optionType, strike, symbol);
+                }
+
+                double ltp = tick != null ? tick.getLastTradedPrice() : 0.0;
+                String ltpKey = String.format("otm%s_%d_LTP", optionType, strike);
+                tickData.put(ltpKey, ltp);
+                logger.debug("ZeroHero OTM: {} key={} ltp={}", symbol, ltpKey, ltp);
+                break; // one instrument per (strike, type) is enough
+            }
+        } catch (Exception e) {
+            logger.warn("ZeroHero OTM: error resolving {} strike {}: {}", optionType, strike, e.getMessage());
+        }
     }
 
     @Override

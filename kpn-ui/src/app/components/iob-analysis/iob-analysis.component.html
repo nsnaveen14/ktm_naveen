@@ -106,8 +106,10 @@
       <div class="table-actions">
         <mat-form-field appearance="outline" style="width:220px; margin-top:8px;">
           <mat-label>Status Filter</mat-label>
-          <mat-select [(ngModel)]="selectedStatuses" multiple (ngModelChange)="onStatusFilterChange()">
-            <mat-option *ngFor="let s of allStatuses" [value]="s">{{s}}</mat-option>
+          <mat-select [(ngModel)]="selectedStatuses" multiple (ngModelChange)="onStatusFilterChange($event)">
+            <mat-option *ngFor="let s of allStatuses" [value]="s">
+              <span [ngClass]="'status-opt-' + s.toLowerCase()">{{s}}</span>
+            </mat-option>
           </mat-select>
         </mat-form-field>
         <button mat-raised-button color="primary"

@@ -230,7 +230,7 @@
           <input matInput type="number" [(ngModel)]="config.trailingActivationPct"
                  [disabled]="!config.trailingSlEnabled" min="10" max="90">
           <span matSuffix>%</span>
-          <mat-hint>e.g. 50 = half way to target</mat-hint>
+          <mat-hint>e.g. 40 = 40% of way to target</mat-hint>
         </mat-form-field>
         <mat-form-field appearance="outline" class="opt-field">
           <mat-label>Trail (% of profit)</mat-label>
@@ -238,6 +238,39 @@
                  [disabled]="!config.trailingSlEnabled" min="10" max="90">
           <span matSuffix>%</span>
           <mat-hint>e.g. 50 = lock in half the gain</mat-hint>
+        </mat-form-field>
+      </div>
+    </div>
+  </mat-expansion-panel>
+
+  <!-- ── Zero Hero Settings ──────────────────────────────────────────────── -->
+  <mat-expansion-panel class="opt-panel">
+    <mat-expansion-panel-header>
+      <mat-panel-title>
+        <mat-icon class="opt-icon">flash_on</mat-icon>
+        Zero Hero — Momentum Consensus
+      </mat-panel-title>
+      <mat-panel-description>
+        <span class="opt-inactive">
+          {{ config.zeroHeroMinScore === 3 ? 'STRICT — all 3 indicators must agree' : 'MODERATE — any 2 of 3 indicators' }}
+        </span>
+      </mat-panel-description>
+    </mat-expansion-panel-header>
+
+    <div class="opt-body">
+      <p class="opt-desc">
+        Zero Hero uses 3 momentum indicators (EMA trend, RSI level, price momentum).
+        Set <strong>2</strong> for any two to agree (more signals, riskier), or <strong>3</strong> to require
+        full consensus (fewer signals, higher conviction).
+      </p>
+      <div class="opt-controls">
+        <mat-form-field appearance="outline" class="opt-field">
+          <mat-label>Min Momentum Score</mat-label>
+          <mat-select [(ngModel)]="config.zeroHeroMinScore">
+            <mat-option [value]="2">2 / 3 — Moderate (default)</mat-option>
+            <mat-option [value]="3">3 / 3 — Strong (all must agree)</mat-option>
+          </mat-select>
+          <mat-hint>Applies on expiry day 14:30–15:10 window</mat-hint>
         </mat-form-field>
       </div>
     </div>
@@ -280,9 +313,20 @@
           </td>
         </ng-container>
 
-        <ng-container matColumnDef="entry">
+        <ng-container matColumnDef="entryInfo">
           <th mat-header-cell *matHeaderCellDef>Entry</th>
-          <td mat-cell *matCellDef="let t">{{ formatPrice(t.entryPrice) }}</td>
+          <td mat-cell *matCellDef="let t">
+            <div class="entry-info-cell">
+              <span class="entry-underlying" *ngIf="t.iobZoneMidpoint">• Midpoint: ₹{{ formatPrice(t.iobZoneMidpoint) }}</span>
+              <span class="entry-premium" *ngIf="t.entryPrice">₹{{ formatPrice(t.entryPrice) }}</span>
+              <span class="entry-nifty" *ngIf="t.underlyingPriceAtEntry">Nifty: ₹{{ formatPrice(t.underlyingPriceAtEntry) }}</span>
+            </div>
+          </td>
+        </ng-container>
+
+        <ng-container matColumnDef="underlyingSl">
+          <th mat-header-cell *matHeaderCellDef>Underlying SL</th>
+          <td mat-cell *matCellDef="let t" class="pnl-negative">{{ t.underlyingStopLoss ? formatPrice(t.underlyingStopLoss) : '—' }}</td>
         </ng-container>
 
         <ng-container matColumnDef="target">
@@ -291,7 +335,7 @@
         </ng-container>
 
         <ng-container matColumnDef="sl">
-          <th mat-header-cell *matHeaderCellDef>SL</th>
+          <th mat-header-cell *matHeaderCellDef>Premium SL</th>
           <td mat-cell *matCellDef="let t" class="pnl-negative">{{ formatPrice(t.stopLossPrice) }}</td>
         </ng-container>
 
@@ -344,9 +388,21 @@
         </td>
       </ng-container>
 
-      <ng-container matColumnDef="entry">
+      <ng-container matColumnDef="entryInfo">
         <th mat-header-cell *matHeaderCellDef>Entry</th>
-        <td mat-cell *matCellDef="let t">{{ formatPrice(t.entryPrice) }}</td>
+        <td mat-cell *matCellDef="let t">
+          <div class="entry-info-cell">
+            <span class="entry-underlying" *ngIf="t.underlyingPriceAtEntry">
+              • {{ t.zoneEntryLevel === 'ZONE_MIDPOINT' ? 'Midpoint' : 'Entry' }}: ₹{{ formatPrice(t.underlyingPriceAtEntry) }}
+            </span>
+            <span class="entry-premium" *ngIf="t.entryPrice">₹{{ formatPrice(t.entryPrice) }} premium</span>
+          </div>
+        </td>
+      </ng-container>
+
+      <ng-container matColumnDef="underlyingSl">
+        <th mat-header-cell *matHeaderCellDef>Underlying SL</th>
+        <td mat-cell *matCellDef="let t" class="pnl-negative">{{ t.underlyingStopLoss ? formatPrice(t.underlyingStopLoss) : '—' }}</td>
       </ng-container>
 
       <ng-container matColumnDef="exit">

@@ -17,10 +17,12 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.stream.Stream;
 
 import static com.trading.kalyani.KPN.constants.ApplicationConstants.*;
 
@@ -43,6 +45,8 @@ import static com.trading.kalyani.KPN.constants.ApplicationConstants.*;
 public class InternalOrderBlockServiceImpl implements InternalOrderBlockService {
 
     private static final Logger logger = LoggerFactory.getLogger(InternalOrderBlockServiceImpl.class);
+
+    private static final ZoneId IST_ZONE_ID = ZoneId.of("Asia/Kolkata");
 
     private static final DateTimeFormatter SIGNATURE_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMddHHmm");
     private static final DateTimeFormatter TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssZ");
@@ -275,7 +279,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
         }
 
         earlyIOB.setStatus("FRESH");
-        earlyIOB.setDetectionTimestamp(LocalDateTime.now()); // timestamp of BOS candle close
+        earlyIOB.setDetectionTimestamp(LocalDateTime.now(IST_ZONE_ID)); // timestamp of BOS candle close
 
         // Copy trade-setup fields from the freshly-computed closed-candle version
         earlyIOB.setEntryPrice(closedCandle.getEntryPrice());
@@ -314,7 +318,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
      */
     private void expireStaleEarlyIOBs(Long instrumentToken) {
         try {
-            LocalDateTime cutoff = LocalDateTime.now().minusMinutes(EARLY_IOB_EXPIRY_MINUTES);
+            LocalDateTime cutoff = LocalDateTime.now(IST_ZONE_ID).minusMinutes(EARLY_IOB_EXPIRY_MINUTES);
             List<InternalOrderBlock> stale = iobRepository.findStaleEarlyIOBs(instrumentToken, cutoff);
             if (stale.isEmpty()) return;
             stale.forEach(iob -> {
@@ -395,6 +399,30 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
             data.put("Timeframe", timeframeDisplay);
             if (iob.getDetectionTimestamp() != null) {
                 data.put("Detection Time", iob.getDetectionTimestamp().format(DATETIME_FORMATTER));
+            }
+
+            // FVG summary + 6-Factor Validation block
+            if (Boolean.TRUE.equals(iob.getHasFvg())) {
+                boolean fvgValid = Boolean.TRUE.equals(iob.getFvgValid());
+                String fvgStatus = fvgValid ? "Valid ✅" : "Invalid ❌";
+                String fvgSummary = iob.getFvgValidationScore() != null
+                        ? String.format("%s (Score: %.0f%%)", fvgStatus, iob.getFvgValidationScore())
+                        : fvgStatus;
+                data.put("• FVG", fvgSummary);
+                data.put("── FVG 6-Factor Validation ──", "");
+                data.put("  Unmitigated",    Boolean.TRUE.equals(iob.getFvgUnmitigated())         ? "✅" : "❌");
+                data.put("  Candle Reaction",Boolean.TRUE.equals(iob.getFvgCandleReactionValid()) ? "✅" : "❌");
+                data.put("  S/R Confluence", Boolean.TRUE.equals(iob.getFvgSrConfluence())        ? "✅" : "❌");
+                data.put("  Gann Box",       Boolean.TRUE.equals(iob.getFvgGannBoxValid())        ? "✅" : "❌");
+                data.put("  BOS Confirmed",  Boolean.TRUE.equals(iob.getFvgBosConfirmed())        ? "✅" : "❌");
+                if (iob.getFvgPriority() != null) {
+                    data.put("  Priority", "🏆 #" + iob.getFvgPriority());
+                }
+                if (iob.getFvgHigh() != null && iob.getFvgLow() != null) {
+                    data.put("  FVG Zone", String.format("₹%.2f - ₹%.2f", iob.getFvgLow(), iob.getFvgHigh()));
+                }
+            } else {
+                data.put("• FVG", "None ➖");
             }
 
             telegramNotificationService.sendTradeAlertAsync(title, message, data);
@@ -553,7 +581,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
             // Previous closed candle's timestamp + 5 min = start of current candle
             HistoricalCandle lastClosed = candles.get(size - 2);
             LocalDateTime candleStart = parseTimestamp(lastClosed.getTimestamp()).plusMinutes(5);
-            long elapsedSeconds = ChronoUnit.SECONDS.between(candleStart, LocalDateTime.now());
+            long elapsedSeconds = ChronoUnit.SECONDS.between(candleStart, LocalDateTime.now(IST_ZONE_ID));
             if (elapsedSeconds < 30) return 0.0; // too early in candle
 
             double elapsedFraction = Math.min(1.0, elapsedSeconds / 300.0); // 5 min = 300 s
@@ -630,7 +658,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
                 .instrumentToken(instrumentToken)
                 .instrumentName(getInstrumentName(instrumentToken))
                 .timeframe(timeframe)
-                .detectionTimestamp(LocalDateTime.now())
+                .detectionTimestamp(LocalDateTime.now(IST_ZONE_ID))
                 .obCandleTime(parseTimestamp(obCandle.getTimestamp()))
                 .obType("BULLISH_IOB")
                 .obHigh(obCandle.getHigh())
@@ -677,7 +705,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
                 .instrumentToken(instrumentToken)
                 .instrumentName(getInstrumentName(instrumentToken))
                 .timeframe(timeframe)
-                .detectionTimestamp(LocalDateTime.now())
+                .detectionTimestamp(LocalDateTime.now(IST_ZONE_ID))
                 .obCandleTime(parseTimestamp(obCandle.getTimestamp()))
                 .obType("BEARISH_IOB")
                 .obHigh(obCandle.getHigh())
@@ -757,69 +785,94 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
     }
 
     /**
-     * Validate IOB for trading
+     * Validates an IOB for trading by applying zone-size, distance, FVG, and mitigation checks.
+     * Each check is delegated to its own method; this method only orchestrates and accumulates.
      */
     private void validateIOB(InternalOrderBlock iob, Double currentPrice) {
         StringBuilder notes = new StringBuilder();
         double confidence = 70.0;
 
-        // Check if zone is reasonable size (not too wide)
-        double zoneSize = iob.getZoneHigh() - iob.getZoneLow();
-        double zoneSizePercent = (zoneSize / currentPrice) * 100;
-
-        if (zoneSizePercent > 1.0) {
-            notes.append("Zone too wide (").append(String.format("%.2f", zoneSizePercent)).append("%). ");
-            confidence -= 15;
-        }
-
-        if (zoneSizePercent < 0.05) {
-            notes.append("Zone too narrow. ");
-            confidence -= 10;
-        }
-
-        // Check distance from current price — graduated penalty; hard-invalid beyond 5%
-        double distancePercent = Math.abs(iob.getDistancePercent());
-        if (distancePercent > 5.0) {
-            notes.append("Zone unreachable — price too far (").append(String.format("%.2f", distancePercent)).append("%). ");
-            confidence = 0; // force invalid — IOB is stale/untradeable at this distance
-        } else if (distancePercent > 2.0) {
-            notes.append("Price far from zone (").append(String.format("%.2f", distancePercent)).append("%). ");
-            confidence -= 20;
-        }
-
-        // Boost confidence based on FVG validation (graduated scoring)
-        if (Boolean.TRUE.equals(iob.getHasFvg())) {
-            if (Boolean.TRUE.equals(iob.getFvgValid())) {
-                // Valid FVG: graduated boost based on validation score (up to +20)
-                double fvgScore = iob.getFvgValidationScore() != null ? iob.getFvgValidationScore() : 50.0;
-                double fvgBoost = (fvgScore / 100.0) * 20.0;
-                confidence += fvgBoost;
-                notes.append(String.format("Valid FVG (Score: %.0f%%, +%.1f). ", fvgScore, fvgBoost));
-            } else {
-                // FVG present but invalid: smaller boost
-                notes.append("FVG present but invalid. ");
-                confidence += 5;
-            }
-        }
-
-        // Check if price is already inside or past the zone
-        if ("BULLISH_IOB".equals(iob.getObType())) {
-            if (currentPrice <= iob.getZoneLow()) {
-                notes.append("Price below zone - may be mitigated. ");
-                confidence -= 20;
-            }
-        } else {
-            if (currentPrice >= iob.getZoneHigh()) {
-                notes.append("Price above zone - may be mitigated. ");
-                confidence -= 20;
-            }
-        }
+        confidence += applyZoneSizeCheck(iob, currentPrice, notes);
+        confidence  = applyDistanceCheck(iob, confidence, notes);
+        confidence += applyFvgBoost(iob, notes);
+        confidence += applyMitigationPenalty(iob, currentPrice, notes);
 
         confidence = Math.max(0, Math.min(100, confidence));
 
         iob.setIsValid(confidence >= 50);
         iob.setSignalConfidence(confidence);
         iob.setValidationNotes(notes.toString());
+    }
+
+    /**
+     * Penalises zones that are too wide (>1%) or too narrow (<0.05%).
+     * Returns the confidence delta (negative = penalty).
+     */
+    private double applyZoneSizeCheck(InternalOrderBlock iob, double currentPrice, StringBuilder notes) {
+        double zoneSizePct = (iob.getZoneHigh() - iob.getZoneLow()) / currentPrice * 100;
+        if (zoneSizePct > 1.0) {
+            notes.append(String.format("Zone too wide (%.2f%%). ", zoneSizePct));
+            return -15;
+        }
+        if (zoneSizePct < 0.05) {
+            notes.append("Zone too narrow. ");
+            return -10;
+        }
+        return 0;
+    }
+
+    /**
+     * Applies a graduated distance penalty.
+     * Beyond 5%: forces confidence to 0 (stale/untradeable).
+     * Beyond 2%: -20 penalty.
+     * Returns the updated confidence value.
+     */
+    private double applyDistanceCheck(InternalOrderBlock iob, double confidence, StringBuilder notes) {
+        double distancePct = Math.abs(iob.getDistancePercent());
+        if (distancePct > 5.0) {
+            notes.append(String.format("Zone unreachable — price too far (%.2f%%). ", distancePct));
+            return 0; // hard-invalid
+        }
+        if (distancePct > 2.0) {
+            notes.append(String.format("Price far from zone (%.2f%%). ", distancePct));
+            return confidence - 20;
+        }
+        return confidence;
+    }
+
+    /**
+     * Boosts confidence based on FVG presence and quality.
+     * Valid FVG: graduated boost up to +20 based on validation score.
+     * FVG present but invalid: flat +5.
+     * Returns the confidence delta.
+     */
+    private double applyFvgBoost(InternalOrderBlock iob, StringBuilder notes) {
+        if (!Boolean.TRUE.equals(iob.getHasFvg())) return 0;
+        if (Boolean.TRUE.equals(iob.getFvgValid())) {
+            double fvgScore = iob.getFvgValidationScore() != null ? iob.getFvgValidationScore() : 50.0;
+            double boost = (fvgScore / 100.0) * 20.0;
+            notes.append(String.format("Valid FVG (Score: %.0f%%, +%.1f). ", fvgScore, boost));
+            return boost;
+        }
+        notes.append("FVG present but invalid. ");
+        return 5;
+    }
+
+    /**
+     * Penalises if price has already moved past the zone (possible mitigation).
+     * Bullish: price below zone low. Bearish: price above zone high.
+     * Returns the confidence delta (0 or -20).
+     */
+    private double applyMitigationPenalty(InternalOrderBlock iob, double currentPrice, StringBuilder notes) {
+        boolean bullish = "BULLISH_IOB".equals(iob.getObType());
+        boolean pastZone = bullish ? currentPrice <= iob.getZoneLow()
+                                   : currentPrice >= iob.getZoneHigh();
+        if (pastZone) {
+            notes.append(bullish ? "Price below zone - may be mitigated. "
+                                 : "Price above zone - may be mitigated. ");
+            return -20;
+        }
+        return 0;
     }
 
     // ==================== Helper Methods ====================
@@ -973,14 +1026,53 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
         return bullish ? netMove > 0 : netMove < 0;
     }
 
+    /** ATR(period) using the candles up to (not including) endIndex. */
+    private double calcAtr(List<HistoricalCandle> candles, int endIndex, int period) {
+        int start = Math.max(1, endIndex - period);
+        if (start >= endIndex) return 0.0;
+        double sum = 0.0;
+        int count = 0;
+        for (int i = start; i < endIndex; i++) {
+            HistoricalCandle cur  = candles.get(i);
+            HistoricalCandle prev = candles.get(i - 1);
+            double tr = Math.max(cur.getHigh() - cur.getLow(),
+                        Math.max(Math.abs(cur.getHigh() - prev.getClose()),
+                                 Math.abs(cur.getLow()  - prev.getClose())));
+            sum += tr;
+            count++;
+        }
+        return count > 0 ? sum / count : 0.0;
+    }
+
+    /** Returns FVG gap size, or 0 if either boundary is null. */
+    private double fvgSize(InternalOrderBlock iob) {
+        if (iob.getFvgHigh() == null || iob.getFvgLow() == null) return 0.0;
+        return iob.getFvgHigh() - iob.getFvgLow();
+    }
+
+    /** Reset all FVG fields so stale DB values are never used after a gap disappears. */
+    private void clearFvgFields(InternalOrderBlock iob) {
+        iob.setHasFvg(false);
+        iob.setFvgValid(false);
+        iob.setFvgHigh(null);
+        iob.setFvgLow(null);
+        iob.setFvgValidationScore(null);
+        iob.setFvgValidationDetails(null);
+        iob.setFvgPriority(null);
+        iob.setFvgUnmitigated(null);
+        iob.setFvgCandleReactionValid(null);
+        iob.setFvgSrConfluence(null);
+        iob.setFvgGannBoxValid(null);
+        iob.setFvgBosConfirmed(null);
+    }
+
     /**
      * Check for Fair Value Gap near the IOB and validate with 6 factors
      */
     private void checkForFVG(InternalOrderBlock iob, List<HistoricalCandle> candles, int obIndex, boolean bullish,
                              List<SwingPoint> swingHighs, List<SwingPoint> swingLows) {
         if (obIndex + 2 >= candles.size()) {
-            iob.setHasFvg(false);
-            iob.setFvgValid(false);
+            clearFvgFields(iob);
             return;
         }
 
@@ -991,8 +1083,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
         if (bullish) {
             // Bullish FVG: gap between candle1.high and candle3.low
             if (candle3.getLow() <= candle1.getHigh()) {
-                iob.setHasFvg(false);
-                iob.setFvgValid(false);
+                clearFvgFields(iob);
                 return;
             }
             fvgLow  = candle1.getHigh();
@@ -1000,8 +1091,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
         } else {
             // Bearish FVG: gap between candle3.high and candle1.low
             if (candle3.getHigh() >= candle1.getLow()) {
-                iob.setHasFvg(false);
-                iob.setFvgValid(false);
+                clearFvgFields(iob);
                 return;
             }
             fvgHigh = candle1.getLow();
@@ -1011,8 +1101,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
         // Reject sub-threshold FVGs — gaps smaller than MIN_FVG_SIZE_PERCENT of price are noise
         double minSize = candle1.getHigh() * MIN_FVG_SIZE_PERCENT / 100.0;
         if (fvgHigh - fvgLow < minSize) {
-            iob.setHasFvg(false);
-            iob.setFvgValid(false);
+            clearFvgFields(iob);
             return;
         }
 
@@ -1025,192 +1114,164 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
     }
 
     /**
-     * Comprehensive FVG validation using 6 factors:
-     * 1. Unmitigated - FVG zone not tested/filled since creation
-     * 2. Candle Reaction - Reaction candle closes inside FVG or in gap direction
-     * 3. Confluence with S/R - FVG overlaps with prior support/resistance
-     * 4. Priority by Position - Lowest bullish FVG = highest priority, highest bearish = highest
-     * 5. Gann Box Position - Bullish FVG in lower portion (0-0.5), bearish in upper (0.5-1)
-     * 6. BOS Before Gap - FVG must form after a Break of Structure
+     * Orchestrates 6-factor FVG validation. Each factor is evaluated by its own method.
+     * Factor 4 (Priority) is deferred to updateFvgScoreWithPriority after all IOBs are ranked.
      */
     private void validateFVG(InternalOrderBlock iob, List<HistoricalCandle> candles, int obIndex,
                              boolean bullish, List<SwingPoint> swingHighs, List<SwingPoint> swingLows) {
 
         double fvgHigh = iob.getFvgHigh();
-        double fvgLow = iob.getFvgLow();
-        int fvgFormationIndex = obIndex + 2; // FVG completes at candle 3
+        double fvgLow  = iob.getFvgLow();
+        int fvgFormationIndex = obIndex + 2;
+
         int factorsPassed = 0;
+        int evaluableFactors = 5; // Factor 5 (Gann) may be unevaluable — tracked dynamically
         StringBuilder details = new StringBuilder();
 
-        // ========== Factor 1: Unmitigated ==========
-        // Check if any candle after FVG formation has closed or wicked fully into the FVG zone
-        boolean unmitigated = true;
-        for (int i = fvgFormationIndex + 1; i < candles.size(); i++) {
-            HistoricalCandle c = candles.get(i);
-            // Check if candle close is inside FVG zone
-            boolean closeInZone = c.getClose() >= fvgLow && c.getClose() <= fvgHigh;
-            // Check if wick fully enters zone (candle low <= fvgLow for bullish means it went through)
-            boolean wickThroughZone;
-            if (bullish) {
-                // For bullish FVG, price dropping below fvgLow means fully mitigated
-                wickThroughZone = c.getLow() <= fvgLow;
-            } else {
-                // For bearish FVG, price rising above fvgHigh means fully mitigated
-                wickThroughZone = c.getHigh() >= fvgHigh;
-            }
-            if (closeInZone || wickThroughZone) {
-                unmitigated = false;
-                break;
-            }
-        }
+        // Factor 1 — Unmitigated
+        boolean unmitigated = isFvgUnmitigated(candles, fvgFormationIndex, fvgLow, fvgHigh, bullish);
         iob.setFvgUnmitigated(unmitigated);
-        if (unmitigated) {
-            factorsPassed++;
-            details.append("Unmitigated ✅ | ");
-        } else {
-            details.append("Unmitigated ❌ | ");
-        }
+        factorsPassed += score(unmitigated, details, "Unmitigated");
 
-        // ========== Factor 2: Candle Reaction ==========
-        // When price retraces to the FVG, check if the reaction candle closes properly
-        boolean candleReactionValid = false;
-        boolean noRetraceYet = true; // tracked in the same pass to avoid a second scan
-        // Look for the first candle that touches the FVG zone after formation
-        for (int i = fvgFormationIndex + 1; i < candles.size(); i++) {
-            HistoricalCandle c = candles.get(i);
-            // Track whether the zone boundary has been reached at all (broader check)
-            if (bullish && c.getLow() <= fvgHigh) noRetraceYet = false;
-            if (!bullish && c.getHigh() >= fvgLow) noRetraceYet = false;
+        // Factor 2 — Candle Reaction
+        boolean candleReaction = isFvgCandleReactionValid(candles, fvgFormationIndex, fvgLow, fvgHigh, bullish);
+        iob.setFvgCandleReactionValid(candleReaction);
+        factorsPassed += score(candleReaction, details, "Candle Reaction");
 
-            boolean touchesZone;
-            if (bullish) {
-                // Price retracing down to touch FVG: candle low touches or enters the zone
-                touchesZone = c.getLow() <= fvgHigh && c.getLow() >= fvgLow;
-            } else {
-                // Price retracing up to touch FVG: candle high touches or enters the zone
-                touchesZone = c.getHigh() >= fvgLow && c.getHigh() <= fvgHigh;
-            }
-
-            if (touchesZone) {
-                // Valid reaction: candle closes at or above fvgLow (bullish) / at or below fvgHigh (bearish)
-                // A close through the far side of the zone invalidates the reaction
-                candleReactionValid = bullish ? c.getClose() >= fvgLow : c.getClose() <= fvgHigh;
-                break; // Only check first retrace candle
-            }
-        }
-        if (noRetraceYet) {
-            candleReactionValid = true; // Not yet tested = valid by default
-        }
-
-        iob.setFvgCandleReactionValid(candleReactionValid);
-        if (candleReactionValid) {
-            factorsPassed++;
-            details.append("Candle Reaction ✅ | ");
-        } else {
-            details.append("Candle Reaction ❌ | ");
-        }
-
-        // ========== Factor 3: Confluence with S/R ==========
-        // Any prior swing point (high or low) within the buffered FVG zone qualifies.
-        // Bullish IOBs benefit from support (swing lows), bearish from resistance (swing highs),
-        // but a broken level of either type can flip roles — check both lists in both cases.
-        double fvgZoneBuffer = (fvgHigh - fvgLow) * 0.5; // 50% buffer for near-overlap
-        double checkLow = fvgLow - fvgZoneBuffer;
-        double checkHigh = fvgHigh + fvgZoneBuffer;
-        boolean srConfluence = anySwingInRange(swingLows, obIndex, checkLow, checkHigh)
-                            || anySwingInRange(swingHighs, obIndex, checkLow, checkHigh);
-
+        // Factor 3 — S/R Confluence
+        boolean srConfluence = isFvgSrConfluent(swingLows, swingHighs, obIndex, fvgLow, fvgHigh);
         iob.setFvgSrConfluence(srConfluence);
-        if (srConfluence) {
-            factorsPassed++;
-            details.append("S/R Confluence ✅ | ");
-        } else {
-            details.append("S/R Confluence ❌ | ");
-        }
+        factorsPassed += score(srConfluence, details, "S/R Confluence");
 
-        // ========== Factor 4: Priority by Position ==========
-        // This is set as a post-pass in scanForIOBs() after all IOBs are detected
-        // For now, initialize priority to 0 (will be updated later)
+        // Factor 4 — Priority (deferred post-pass)
         iob.setFvgPriority(0);
-        // We count this factor during the post-pass; for scoring we'll give benefit of doubt
         details.append("Priority: Pending | ");
 
-        // ========== Factor 5: Gann Box Position ==========
-        // Simulate Gann Box: find recent move range (lookback ~30 candles)
-        // For bullish: draw from low-to-high; FVG must be in lower portion (0-0.5)
-        // For bearish: draw from high-to-low; FVG must be in upper portion (0.5-1)
-        boolean gannBoxValid = false;
-        int gannLookback = Math.min(50, obIndex); // Look back up to 50 candles
-        if (gannLookback > 5) {
-            double rangeHigh = Double.NEGATIVE_INFINITY;
-            double rangeLow = Double.MAX_VALUE;
-
-            for (int i = obIndex - gannLookback; i < obIndex; i++) {
-                if (i < 0) continue;
-                HistoricalCandle c = candles.get(i);
-                rangeHigh = Math.max(rangeHigh, c.getHigh());
-                rangeLow = Math.min(rangeLow, c.getLow());
-            }
-
-            double totalRange = rangeHigh - rangeLow;
-            if (totalRange > 0) {
-                double fvgMidpoint = (fvgHigh + fvgLow) / 2.0;
-                // Normalize FVG midpoint to 0-1 within the Gann range
-                // 0 = rangeLow (bottom), 1 = rangeHigh (top)
-                double normalizedPosition = (fvgMidpoint - rangeLow) / totalRange;
-
-                if (bullish) {
-                    // Valid bullish FVG should be in lower portion (near 0 level, 0-0.5)
-                    gannBoxValid = normalizedPosition <= 0.5;
-                } else {
-                    // Valid bearish FVG should be in upper portion (near 1 level, 0.5-1)
-                    gannBoxValid = normalizedPosition >= 0.5;
-                }
-
-                details.append(String.format("Gann Box %.0f%% %s | ",
-                        normalizedPosition * 100,
-                        gannBoxValid ? "✅" : "❌"));
-            } else {
-                details.append("Gann Box N/A | ");
-            }
+        // Factor 5 — Gann Box Position
+        // null = unevaluable (no usable range); updateFvgScoreWithPriority uses null to reduce denominator
+        GannResult gann = evalGannBox(candles, obIndex, fvgLow, fvgHigh, swingHighs, swingLows, bullish);
+        iob.setFvgGannBoxValid(gann.evaluable ? gann.valid : null);
+        if (gann.evaluable) {
+            factorsPassed += score(gann.valid, details, String.format("Gann Box %.0f%%", gann.position * 100));
         } else {
             details.append("Gann Box N/A | ");
+            evaluableFactors--;
         }
 
-        iob.setFvgGannBoxValid(gannBoxValid);
-        if (gannBoxValid) {
-            factorsPassed++;
-        }
-
-        // ========== Factor 6: FVG Proximity to BOS Level ==========
-        // The FVG (and its parent OB candle) should form close to the structural BOS level.
-        // An OB candle far from the broken swing level belongs to a different leg and is not
-        // a reliable IOB zone. Threshold: IOB zone midpoint within 2% of the BOS level.
-        boolean bosConfirmed = false;
-        if (iob.getBosLevel() != null && iob.getBosLevel() > 0) {
-            double zoneMid = (iob.getZoneHigh() + iob.getZoneLow()) / 2.0;
-            double bosProximityPct = Math.abs(zoneMid - iob.getBosLevel()) / iob.getBosLevel() * 100.0;
-            bosConfirmed = bosProximityPct <= 2.0; // OB zone within 2% of broken structural level
-        }
-
+        // Factor 6 — BOS Proximity (ATR-based threshold)
+        boolean bosConfirmed = isFvgNearBos(iob, candles, obIndex);
         iob.setFvgBosConfirmed(bosConfirmed);
-        if (bosConfirmed) {
-            factorsPassed++;
-            details.append("BOS ✅");
-        } else {
-            details.append("BOS ❌");
-        }
+        factorsPassed += score(bosConfirmed, details, "BOS");
 
-        // ========== Calculate composite score ==========
-        // 5 factors evaluated now (Priority is deferred, scored in updateFvgScoreWithPriority)
-        double score = (factorsPassed / 5.0) * 100.0;
-
-        iob.setFvgValidationScore(score);
-        iob.setFvgValid(score >= 50.0);
-        iob.setFvgValidationDetails(String.format("%d/5: %s", factorsPassed, details));
+        // Composite score — Priority counted in updateFvgScoreWithPriority; Gann may be absent
+        double scoreVal = evaluableFactors > 0 ? (factorsPassed / (double) evaluableFactors) * 100.0 : 0.0;
+        iob.setFvgValidationScore(scoreVal);
+        iob.setFvgValid(scoreVal >= 50.0);
+        iob.setFvgValidationDetails(String.format("%d/%d: %s", factorsPassed, evaluableFactors, details));
 
         logger.debug("FVG Validation for {} IOB: Score={}, Valid={}, Details={}",
-                bullish ? "BULLISH" : "BEARISH", score, iob.getFvgValid(), iob.getFvgValidationDetails());
+                bullish ? "BULLISH" : "BEARISH", scoreVal, iob.getFvgValid(), iob.getFvgValidationDetails());
+    }
+
+    /** Appends a pass/fail label to details and returns 1 if passed, 0 otherwise. */
+    private int score(boolean passed, StringBuilder details, String label) {
+        details.append(label).append(passed ? " ✅ | " : " ❌ | ");
+        return passed ? 1 : 0;
+    }
+
+    /**
+     * Factor 1: Unmitigated.
+     * FVG is consumed only when a candle closes past the far boundary (not merely wicking in).
+     */
+    private boolean isFvgUnmitigated(List<HistoricalCandle> candles, int fromIndex,
+                                     double fvgLow, double fvgHigh, boolean bullish) {
+        for (int i = fromIndex + 1; i < candles.size(); i++) {
+            double close = candles.get(i).getClose();
+            if (bullish ? close < fvgLow : close > fvgHigh) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Factor 2: Candle Reaction.
+     * Finds the first candle that retraces into the FVG zone and checks it closes on the correct side.
+     * If the zone has not been tested yet, treated as valid by default.
+     */
+    private boolean isFvgCandleReactionValid(List<HistoricalCandle> candles, int fromIndex,
+                                              double fvgLow, double fvgHigh, boolean bullish) {
+        for (int i = fromIndex + 1; i < candles.size(); i++) {
+            HistoricalCandle c = candles.get(i);
+            boolean touchesZone = bullish
+                    ? c.getLow() <= fvgHigh && c.getLow() >= fvgLow
+                    : c.getHigh() >= fvgLow  && c.getHigh() <= fvgHigh;
+            if (touchesZone) {
+                return bullish ? c.getClose() >= fvgLow : c.getClose() <= fvgHigh;
+            }
+            // Broader approach — if price has already blown through zone boundary, stop early
+            boolean pastZone = bullish ? c.getLow() < fvgLow : c.getHigh() > fvgHigh;
+            if (pastZone) return false;
+        }
+        return true; // zone not yet tested — valid by default
+    }
+
+    /**
+     * Factor 3: S/R Confluence.
+     * Any prior swing point within a 50%-buffered FVG zone qualifies (support or resistance).
+     */
+    private boolean isFvgSrConfluent(List<SwingPoint> swingLows, List<SwingPoint> swingHighs,
+                                      int obIndex, double fvgLow, double fvgHigh) {
+        double buffer = (fvgHigh - fvgLow) * 0.5;
+        double checkLow  = fvgLow  - buffer;
+        double checkHigh = fvgHigh + buffer;
+        return Stream.of(swingLows, swingHighs)
+                .anyMatch(swings -> anySwingInRange(swings, obIndex, checkLow, checkHigh));
+    }
+
+    /** Holds the result of a Gann Box evaluation. */
+    private record GannResult(boolean evaluable, boolean valid, double position) {}
+
+    /**
+     * Factor 5: Gann Box Position.
+     * Uses the swing-leg range (most recent swing high and low before OB) as the Gann range.
+     * Falls back to a 50-candle raw scan when no swing points exist.
+     * Bullish FVG valid in lower half (0–0.5); bearish in upper half (0.5–1).
+     */
+    private GannResult evalGannBox(List<HistoricalCandle> candles, int obIndex,
+                                   double fvgLow, double fvgHigh,
+                                   List<SwingPoint> swingHighs, List<SwingPoint> swingLows,
+                                   boolean bullish) {
+        double rangeHigh = swingHighs.stream().filter(s -> s.index < obIndex)
+                .mapToDouble(s -> s.price).max().orElse(Double.NEGATIVE_INFINITY);
+        double rangeLow  = swingLows.stream().filter(s -> s.index < obIndex)
+                .mapToDouble(s -> s.price).min().orElse(Double.MAX_VALUE);
+
+        // Fallback: raw 50-candle scan
+        if (rangeHigh == Double.NEGATIVE_INFINITY || rangeLow == Double.MAX_VALUE) {
+            int lookback = Math.min(50, obIndex);
+            for (int i = obIndex - lookback; i < obIndex; i++) {
+                rangeHigh = Math.max(rangeHigh, candles.get(i).getHigh());
+                rangeLow  = Math.min(rangeLow,  candles.get(i).getLow());
+            }
+        }
+
+        if (rangeHigh <= rangeLow) return new GannResult(false, false, 0.0);
+
+        double pos = ((fvgHigh + fvgLow) / 2.0 - rangeLow) / (rangeHigh - rangeLow);
+        boolean valid = bullish ? pos <= 0.5 : pos >= 0.5;
+        return new GannResult(true, valid, pos);
+    }
+
+    /**
+     * Factor 6: BOS Proximity.
+     * OB zone midpoint must be within 1× ATR(14) of the structural BOS level.
+     * Falls back to 1% of the BOS level if ATR cannot be computed.
+     */
+    private boolean isFvgNearBos(InternalOrderBlock iob, List<HistoricalCandle> candles, int obIndex) {
+        if (iob.getBosLevel() == null || iob.getBosLevel() <= 0) return false;
+        double zoneMid = (iob.getZoneHigh() + iob.getZoneLow()) / 2.0;
+        double atr = calcAtr(candles, obIndex, 14);
+        double threshold = atr > 0 ? atr : iob.getBosLevel() * 0.01;
+        return Math.abs(zoneMid - iob.getBosLevel()) <= threshold;
     }
 
     /**
@@ -1227,14 +1288,19 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
                 .filter(i -> "BEARISH_IOB".equals(i.getObType()) && Boolean.TRUE.equals(i.getHasFvg()))
                 .collect(java.util.stream.Collectors.toList());
 
-        // Bullish: lowest FVG zone = highest priority (rank 1)
-        bullishWithFvg.sort(Comparator.comparingDouble(i -> i.getFvgLow() != null ? i.getFvgLow() : Double.MAX_VALUE));
+        // Bullish: lowest FVG zone = highest priority (rank 1); tie-break by largest gap size
+        Comparator<InternalOrderBlock> bullishSort = Comparator
+                .comparingDouble((InternalOrderBlock i) -> i.getFvgLow() != null ? i.getFvgLow() : Double.MAX_VALUE)
+                .thenComparingDouble(i -> -(fvgSize(i)));
+        bullishWithFvg.sort(bullishSort);
         rankAndScore(bullishWithFvg);
 
-        // Bearish: highest FVG zone = highest priority (rank 1)
-        bearishWithFvg.sort((a, b) -> Double.compare(
-                b.getFvgHigh() != null ? b.getFvgHigh() : Double.NEGATIVE_INFINITY,
-                a.getFvgHigh() != null ? a.getFvgHigh() : Double.NEGATIVE_INFINITY));
+        // Bearish: highest FVG zone = highest priority (rank 1); tie-break by largest gap size
+        Comparator<InternalOrderBlock> bearishSort = Comparator
+                .comparingDouble((InternalOrderBlock i) -> i.getFvgHigh() != null ? i.getFvgHigh() : Double.MIN_VALUE)
+                .thenComparingDouble(i -> -(fvgSize(i)))
+                .reversed();
+        bearishWithFvg.sort(bearishSort);
         rankAndScore(bearishWithFvg);
     }
 
@@ -1253,7 +1319,8 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
      * Update FVG validation score and details with priority factor result
      */
     private void updateFvgScoreWithPriority(InternalOrderBlock iob, int priority, boolean isPriorityGood) {
-        // Recalculate score including priority (now 6 factors)
+        // Recalculate score now that Priority (factor 4) is known.
+        // Gann (factor 5) may be null = unevaluable → exclude from denominator to avoid unfair penalty.
         int factorsPassed = 0;
         if (Boolean.TRUE.equals(iob.getFvgUnmitigated())) factorsPassed++;
         if (Boolean.TRUE.equals(iob.getFvgCandleReactionValid())) factorsPassed++;
@@ -1262,7 +1329,8 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
         if (Boolean.TRUE.equals(iob.getFvgGannBoxValid())) factorsPassed++;
         if (Boolean.TRUE.equals(iob.getFvgBosConfirmed())) factorsPassed++;
 
-        double score = (factorsPassed / 6.0) * 100.0;
+        int denominator = iob.getFvgGannBoxValid() == null ? 5 : 6;
+        double score = (factorsPassed / (double) denominator) * 100.0;
         iob.setFvgValidationScore(score);
         iob.setFvgValid(score >= 50.0);
 
@@ -1275,7 +1343,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
                 .append(fvgFlag(iob.getFvgGannBoxValid(), "Gann Box")).append(" | ")
                 .append(fvgFlag(iob.getFvgBosConfirmed(), "BOS"));
 
-        iob.setFvgValidationDetails(String.format("%d/6: %s", factorsPassed, details));
+        iob.setFvgValidationDetails(String.format("%d/%d: %s", factorsPassed, denominator, details));
 
         logger.debug("FVG Priority assigned: {} IOB priority #{}, score={}, valid={}",
                 iob.getObType(), priority, score, iob.getFvgValid());
@@ -1322,7 +1390,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
         }
 
         // Check for overlapping zones in recent IOBs (last 24 hours)
-        LocalDateTime since = LocalDateTime.now().minusHours(24);
+        LocalDateTime since = LocalDateTime.now(IST_ZONE_ID).minusHours(24);
         List<InternalOrderBlock> recentIOBs = iobRepository.findAllIOBsSince(iob.getInstrumentToken(), since);
 
         for (InternalOrderBlock existingIOB : recentIOBs) {
@@ -1377,7 +1445,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
                 lookbackDays = 5;
             }
 
-            LocalDateTime toDate = LocalDateTime.now();
+            LocalDateTime toDate = LocalDateTime.now(IST_ZONE_ID);
             LocalDateTime fromDate = toDate.minusDays(lookbackDays);
 
             HistoricalDataRequest request = HistoricalDataRequest.builder()
@@ -1466,12 +1534,12 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
      */
     private void computeZoneEntryLevel(InternalOrderBlock iob, Double price) {
         if (iob.getZoneHigh() == null || iob.getZoneLow() == null || price == null) return;
-        double high = iob.getZoneHigh();
+        double high = iob.getZoneHigh();//₹22842.70 - ₹22883.40
         double low  = iob.getZoneLow();
-        double size = high - low;
+        double size = high - low;//40.7
         if (size <= 0) return;
 
-        double mid = (high + low) / 2.0;
+        double mid = (high + low) / 2.0;//22863.0
         boolean bullish = "BULLISH_IOB".equals(iob.getObType());
 
         // Retracement %: 0 = just touched entry side, 100 = hit the SL/far side
@@ -1484,13 +1552,13 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
         } else {
             // Price enters from below: retracement depth = distance up from zoneLow
             retracePct = ((price - low) / size) * 100.0;
-            level = price <= mid ? "HIGH_ZONE" : "LOW_ZONE";
+            level = price >= mid ? "HIGH_ZONE" : "LOW_ZONE";
         }
 
         iob.setZoneEntryLevel(level);
         iob.setZoneRetracementPercent(Math.min(100.0, Math.max(0.0, retracePct)));
-        logger.debug("IOB {} zone entry: {} ({:.1f}% retracement) at price {}",
-                iob.getId(), level, retracePct, price);
+        logger.debug("IOB {} zone entry: {} ({}% retracement) at price {}",
+                iob.getId(), level, String.format("%.1f", retracePct), price);
     }
 
     @Override
@@ -1498,7 +1566,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
         List<InternalOrderBlock> mitigatedIOBs = iobRepository.findIOBsAtPrice(instrumentToken, currentPrice);
         if (mitigatedIOBs.isEmpty()) return mitigatedIOBs;
 
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(IST_ZONE_ID);
 
         // Step 1: mutate all fields including the alert flag — mark before save so a failed
         // Telegram call after a successful save does not cause a duplicate alert on the next tick.
@@ -1537,7 +1605,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
         List<InternalOrderBlock> monitored = iobRepository.findIOBsNeedingTargetMonitoring(instrumentToken);
         if (monitored.isEmpty()) return;
 
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(IST_ZONE_ID);
         List<InternalOrderBlock> changed = new ArrayList<>();
         List<Runnable> pendingAlerts = new ArrayList<>();
 
@@ -1569,6 +1637,10 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
                     iob.setTarget1HitTime(now);
                     iob.setTarget1HitPrice(currentPrice);
                     iob.setTarget1AlertSent(true);
+                    if (iob.getActualEntryPrice() != null) {
+                        iob.setPointsCaptured(isBullish ? currentPrice - iob.getActualEntryPrice()
+                                                        : iob.getActualEntryPrice() - currentPrice);
+                    }
                     pendingAlerts.add(() -> sendTargetHitAlert(iob, 1, currentPrice));
                     logger.info("IOB {} Target 1 hit at {} price {}", iob.getId(), now, currentPrice);
                     dirty = true;
@@ -1581,6 +1653,10 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
                     iob.setTarget2HitTime(now);
                     iob.setTarget2HitPrice(currentPrice);
                     iob.setTarget2AlertSent(true);
+                    if (iob.getActualEntryPrice() != null) {
+                        iob.setPointsCaptured(isBullish ? currentPrice - iob.getActualEntryPrice()
+                                                        : iob.getActualEntryPrice() - currentPrice);
+                    }
                     pendingAlerts.add(() -> sendTargetHitAlert(iob, 2, currentPrice));
                     logger.info("IOB {} Target 2 hit at {} price {}", iob.getId(), now, currentPrice);
                     dirty = true;
@@ -1693,7 +1769,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
             }
 
             // Add hit time
-            data.put("Hit Time", LocalDateTime.now().format(
+            data.put("Hit Time", LocalDateTime.now(IST_ZONE_ID).format(
                     TIME_FORMATTER));
 
             if (iob.getDetectionTimestamp() != null) {
@@ -1750,7 +1826,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
             }
 
             // Add hit time
-            data.put("SL Hit Time", LocalDateTime.now().format(
+            data.put("SL Hit Time", LocalDateTime.now(IST_ZONE_ID).format(
                     TIME_FORMATTER));
 
             if (iob.getMaxFavorableExcursion() != null) {
@@ -1773,7 +1849,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
                                       !Boolean.TRUE.equals(iob.getMitigationAlertSent());
 
             iob.setStatus("MITIGATED");
-            iob.setMitigationTime(LocalDateTime.now());
+            iob.setMitigationTime(LocalDateTime.now(IST_ZONE_ID));
             if (shouldSendAlert) {
                 iob.setMitigationAlertSent(true); // set before save so a failed Telegram call doesn't cause duplicate
             }
@@ -1795,7 +1871,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
             return 0;
         }
 
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(IST_ZONE_ID);
         for (InternalOrderBlock iob : freshIOBs) {
             iob.setStatus("MITIGATED");
             iob.setMitigationTime(now);
@@ -1868,7 +1944,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
                 .filter(i -> "BULLISH_IOB".equals(i.get("obType"))).count());
         dashboard.put("bearishCount", allIOBs.stream()
                 .filter(i -> "BEARISH_IOB".equals(i.get("obType"))).count());
-        dashboard.put("timestamp", LocalDateTime.now());
+        dashboard.put("timestamp", LocalDateTime.now(IST_ZONE_ID));
 
         return dashboard;
     }
@@ -1908,7 +1984,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
         result.put("activeCount", activeIOBs.size());
         result.put("mitigatedCount", mitigatedIOBs.size());
         result.put("completedCount", completedIOBs.size());
-        result.put("timestamp", LocalDateTime.now());
+        result.put("timestamp", LocalDateTime.now(IST_ZONE_ID));
 
         return result;
     }
@@ -1925,7 +2001,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
         }
 
         result.put("analyses", analyses);
-        result.put("timestamp", LocalDateTime.now());
+        result.put("timestamp", LocalDateTime.now(IST_ZONE_ID));
 
         return result;
     }
@@ -2005,9 +2081,9 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
 
     @Override
     public void expireOldIOBs() {
-        LocalDateTime cutoffTime = LocalDateTime.now().minusDays(2);
-        iobRepository.expireOldIOBs(cutoffTime);
-        logger.info("Expired old IOBs before {}", cutoffTime);
+        LocalDateTime cutoffTime = LocalDateTime.now(ZoneId.of("Asia/Kolkata")).minusDays(2);
+        int expired = iobRepository.expireOldIOBs(cutoffTime);
+        logger.info("Expired {} old IOBs before {}", expired, cutoffTime);
     }
 
     @Override
@@ -2247,6 +2323,16 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
                 data.put("Target 3 (Was)", String.format("₹%.2f", iob.getTarget3()));
             }
 
+            // FVG summary
+            if (Boolean.TRUE.equals(iob.getHasFvg())) {
+                boolean fvgValid = Boolean.TRUE.equals(iob.getFvgValid());
+                String fvgStatus = fvgValid ? "Valid ✅" : "Invalid ❌";
+                double fvgScore = iob.getFvgValidationScore() != null ? iob.getFvgValidationScore() : 0.0;
+                data.put("• FVG", String.format("%s (Score: %.0f%%)", fvgStatus, fvgScore));
+            } else {
+                data.put("• FVG", "None ➖");
+            }
+
             // Add timeframe with from-to time range
             String timeframeDisplay = formatTimeframeWithRange(iob.getTimeframe(), iob.getObCandleTime());
             data.put("Timeframe", timeframeDisplay);
@@ -2355,12 +2441,15 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
 
             // FVG validation details
             if (Boolean.TRUE.equals(iob.getHasFvg())) {
+                boolean fvgValid = Boolean.TRUE.equals(iob.getFvgValid());
+                String fvgStatus = fvgValid ? "Valid ✅" : "Invalid ❌";
                 double fvgScore = iob.getFvgValidationScore() != null ? iob.getFvgValidationScore() : 0.0;
-                data.put("FVG", String.format("%s (Score: %.0f%%)",
-                        Boolean.TRUE.equals(iob.getFvgValid()) ? "Valid ✅" : "Invalid ❌", fvgScore));
+                data.put("• FVG", String.format("%s (Score: %.0f%%)", fvgStatus, fvgScore));
                 if (iob.getFvgPriority() != null && iob.getFvgPriority() > 0) {
-                    data.put("FVG Priority", "#" + iob.getFvgPriority());
+                    data.put("  FVG Priority", "#" + iob.getFvgPriority());
                 }
+            } else {
+                data.put("• FVG", "None ➖");
             }
 
             // Add timeframe with from-to time range
@@ -2457,7 +2546,7 @@ public class InternalOrderBlockServiceImpl implements InternalOrderBlockService 
 
         analysis.put("instrumentToken", instrumentToken);
         analysis.put("instrumentName", getInstrumentName(instrumentToken));
-        analysis.put("timestamp", LocalDateTime.now());
+        analysis.put("timestamp", LocalDateTime.now(IST_ZONE_ID));
 
         return analysis;
     }

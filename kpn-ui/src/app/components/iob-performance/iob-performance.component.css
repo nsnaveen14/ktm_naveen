@@ -338,11 +338,17 @@ h4 {
   display: flex;
   flex-wrap: wrap;
   gap: 15px;
-  align-items: flex-start;
+  align-items: center;
 }
 
 .backtest-form mat-form-field {
   width: 180px;
+}
+
+.backtest-toggle {
+  display: flex;
+  align-items: center;
+  padding-bottom: 4px;
 }
 
 .backtest-results {
@@ -373,6 +379,28 @@ h4 {
 .result-item .value {
   font-size: 24px;
   font-weight: bold;
+}
+
+.result-item .value .win {
+  color: #4caf50;
+  font-size: inherit;
+}
+
+.result-item .value .loss {
+  color: #f44336;
+  font-size: inherit;
+}
+
+.result-item .value.good {
+  color: #4caf50;
+}
+
+.result-item .value.profit {
+  color: #4caf50;
+}
+
+.result-item .value.loss {
+  color: #f44336;
 }
 
 /* Config Form */
@@ -459,6 +487,21 @@ mat-divider {
 .confidence-badge.low {
   background-color: #ffebee;
   color: #c62828;
+}
+
+/* Select dropdown text */
+::ng-deep .mat-mdc-select-value,
+::ng-deep .mat-mdc-select-value-text,
+::ng-deep .mat-mdc-select-placeholder {
+  color: #ffffff !important;
+}
+
+::ng-deep .mat-mdc-option .mdc-list-item__primary-text {
+  color: #ffffff !important;
+}
+
+::ng-deep .mat-mdc-select-panel {
+  background: #1e1e2e !important;
 }
 
 /* Paginator styling */

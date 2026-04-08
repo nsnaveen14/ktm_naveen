@@ -722,8 +722,13 @@ public class IOBAutoTradeServiceImpl implements IOBAutoTradeService {
             // Track processed IOB signatures to prevent duplicates
             Set<String> processedIOBSignatures = new HashSet<>();
 
-            // Get minimum confidence from config (default 85%)
-            double minConfidence = getConfigDouble("minConfidence", DEFAULT_MIN_CONFIDENCE);
+            // Get minimum confidence: from params (UI override) or config default
+            double minConfidence = (params != null && params.containsKey("minConfidence"))
+                    ? ((Number) params.get("minConfidence")).doubleValue()
+                    : getConfigDouble("minConfidence", DEFAULT_MIN_CONFIDENCE);
+
+            // FVG filter: only trade IOBs that have a valid FVG
+            boolean requireFvg = params != null && Boolean.TRUE.equals(params.get("requireFvg"));
 
             // Process candles in sequence
             for (int i = 50; i < candles.size() - 10; i++) {
@@ -738,6 +743,11 @@ public class IOBAutoTradeServiceImpl implements IOBAutoTradeService {
                     Double confidence = iob.getSignalConfidence();
                     if (confidence == null || confidence < minConfidence) {
                         continue; // Skip low confidence IOBs
+                    }
+
+                    // Apply FVG filter if configured
+                    if (requireFvg && !Boolean.TRUE.equals(iob.getFvgValid())) {
+                        continue; // Skip IOBs without valid FVG
                     }
 
                     // Generate unique signature for this IOB to prevent duplicates
@@ -787,6 +797,36 @@ public class IOBAutoTradeServiceImpl implements IOBAutoTradeService {
             }
 
             int totalTrades = wins + losses;
+
+            // Calculate advanced performance metrics
+            double totalWinPnl = 0, totalLossPnl = 0;
+            double equity = 0, peak = 0, maxDrawdown = 0;
+            int maxWinStreak = 0, maxLossStreak = 0, curWinStreak = 0, curLossStreak = 0;
+            for (IOBTradeResult trade : backtestTrades) {
+                double pnl = trade.getNetPnl() != null ? trade.getNetPnl() : 0;
+                if (Boolean.TRUE.equals(trade.getIsWinner())) {
+                    totalWinPnl += pnl;
+                    curWinStreak++;
+                    curLossStreak = 0;
+                    if (curWinStreak > maxWinStreak) maxWinStreak = curWinStreak;
+                } else {
+                    totalLossPnl += Math.abs(pnl);
+                    curLossStreak++;
+                    curWinStreak = 0;
+                    if (curLossStreak > maxLossStreak) maxLossStreak = curLossStreak;
+                }
+                equity += pnl;
+                if (equity > peak) peak = equity;
+                double dd = peak - equity;
+                if (dd > maxDrawdown) maxDrawdown = dd;
+            }
+            double profitFactor = totalLossPnl > 0 ? totalWinPnl / totalLossPnl : totalWinPnl;
+            double avgWin = wins > 0 ? totalWinPnl / wins : 0;
+            double avgLoss = losses > 0 ? totalLossPnl / losses : 0;
+            double winProb = totalTrades > 0 ? (double) wins / totalTrades : 0;
+            double expectancy = (winProb * avgWin) - ((1 - winProb) * avgLoss);
+            double maxDrawdownPct = peak > 0 ? maxDrawdown / peak * 100 : 0;
+
             results.put("success", true);
             results.put("instrumentToken", instrumentToken);
             results.put("period", Map.of("start", startDate, "end", endDate));
@@ -798,6 +838,14 @@ public class IOBAutoTradeServiceImpl implements IOBAutoTradeService {
             results.put("totalPnl", totalPnl);
             results.put("averageRR", totalTrades > 0 ? (totalRR / totalTrades) : 0);
             results.put("totalPointsCaptured", totalPointsCaptured);
+            results.put("profitFactor", profitFactor);
+            results.put("maxDrawdown", maxDrawdown);
+            results.put("maxDrawdownPercent", maxDrawdownPct);
+            results.put("expectancy", expectancy);
+            results.put("avgWin", avgWin);
+            results.put("avgLoss", avgLoss);
+            results.put("maxWinStreak", maxWinStreak);
+            results.put("maxLossStreak", maxLossStreak);
             results.put("trades", backtestTrades.stream().map(this::tradeToMap).toList());
 
         } catch (Exception e) {
